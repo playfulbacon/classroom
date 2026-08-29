@@ -1,0 +1,18 @@
+{
+  "name": "classroom-arcade",
+  "private": true,
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"npm -w server run dev\" \"npm -w client run dev\"",
+    "build": "npm -w client run build",
+    "start": "npm -w server run start",
+    "typecheck": "npm -w server run typecheck && npm -w client run typecheck",
+    "smoke": "npm -w server run smoke"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
