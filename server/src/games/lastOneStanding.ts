@@ -48,6 +48,13 @@ interface ActiveEvent extends LosEvent {
   duration: number;
 }
 
+interface BotBrain {
+  tx: number;
+  ty: number;
+  repickAt: number;
+  nextDashAt: number;
+}
+
 export class LastOneStanding implements GameModule {
   readonly id = 'los' as const;
   private readonly ctx: GameCtx;
@@ -62,6 +69,7 @@ export class LastOneStanding implements GameModule {
   private elimOrder: number[] = [];
   private placements: number[] = [];
   private interval: ReturnType<typeof setInterval> | null = null;
+  private readonly brains = new Map<number, BotBrain>();
 
   constructor(ctx: GameCtx) {
     this.ctx = ctx;
@@ -149,6 +157,54 @@ export class LastOneStanding implements GameModule {
       body.vy += dy * DASH_SPEED;
       body.dashReadyAt = this.t + DASH_COOLDOWN;
     }
+  }
+
+  // Fake-player AI: drift between random waypoints well inside the arena,
+  // steer hard for the centre when the edge gets close, and occasionally
+  // dash into a neighbour who's further out than we are.
+  botInput(slot: number): InputPayload | null {
+    const body = this.bodies.get(slot);
+    if (!body || !body.alive || this.phase !== 'play') return null;
+    let brain = this.brains.get(slot);
+    if (!brain) {
+      brain = { tx: 0, ty: 0, repickAt: 0, nextDashAt: this.t + 2 + Math.random() * 4 };
+      this.brains.set(slot, brain);
+    }
+    if (this.t >= brain.repickAt) {
+      const a = Math.random() * Math.PI * 2;
+      const r = this.arenaR * (0.15 + Math.random() * 0.45);
+      brain.tx = Math.cos(a) * r;
+      brain.ty = Math.sin(a) * r;
+      brain.repickAt = this.t + 1.2 + Math.random() * 1.8;
+    }
+    const myDist = Math.hypot(body.x, body.y);
+    if (this.t >= brain.nextDashAt && this.t >= body.dashReadyAt) {
+      brain.nextDashAt = this.t + 3 + Math.random() * 4;
+      let victim: { x: number; y: number } | null = null;
+      let victimDist = 130;
+      for (const other of this.bodies.values()) {
+        if (other === body || !other.alive) continue;
+        const d = Math.hypot(other.x - body.x, other.y - body.y);
+        if (d > 1 && d < victimDist && Math.hypot(other.x, other.y) > myDist) {
+          victim = other;
+          victimDist = d;
+        }
+      }
+      if (victim) {
+        return {
+          t: 'dash',
+          x: (victim.x - body.x) / victimDist,
+          y: (victim.y - body.y) / victimDist,
+        };
+      }
+    }
+    // Edge panic overrides the waypoint.
+    const tx = myDist > this.arenaR * 0.75 ? 0 : brain.tx;
+    const ty = myDist > this.arenaR * 0.75 ? 0 : brain.ty;
+    const dx = tx - body.x;
+    const dy = ty - body.y;
+    const mag = Math.hypot(dx, dy) || 1;
+    return { t: 'joy', x: dx / mag, y: dy / mag };
   }
 
   personal(slot: number): Partial<MeState> {

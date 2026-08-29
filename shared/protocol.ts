@@ -10,6 +10,7 @@ export interface PlayerInfo {
   name: string;
   color: string;
   connected: boolean;
+  bot?: boolean; // server-driven fake player for testing
 }
 
 export interface RoomOptions {
@@ -168,6 +169,7 @@ export interface HostStartRequest {
 //  'join'         (JoinRequest, cb: JoinResponse)
 //  'host:start'   (HostStartRequest)
 //  'host:lobby'   ()
+//  'host:bots'    ({delta: number}) — add/remove fake players (lobby only)
 //  'input'        (InputPayload)
 
 export const MAX_PLAYERS = 70;

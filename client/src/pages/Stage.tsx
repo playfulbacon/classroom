@@ -128,6 +128,7 @@ export function Stage() {
   }
 
   const joinUrl = `${location.host}`;
+  const botCount = room.players.filter((p) => p.bot).length;
 
   return (
     <div className="stage">
@@ -154,7 +155,8 @@ export function Stage() {
               <div key={p.id} className={`lobby-chip${p.connected ? '' : ' disconnected'}`}>
                 <span className="dot" style={{ background: p.color }} />
                 <span>
-                  {String(p.id).padStart(2, '0')} {p.name}
+                  {String(p.id).padStart(2, '0')} {p.bot ? '🤖 ' : ''}
+                  {p.name}
                 </span>
               </div>
             ))}
@@ -185,6 +187,23 @@ export function Stage() {
               />
               piece rotation
             </label>
+            <div className="bot-controls">
+              <button
+                onClick={() => socket.emit('host:bots', { delta: -1 })}
+                disabled={botCount === 0}
+              >
+                −
+              </button>
+              <span>🤖 {botCount}</span>
+              <button onClick={() => socket.emit('host:bots', { delta: 1 })}>＋</button>
+              <button onClick={() => socket.emit('host:bots', { delta: 10 })}>+10</button>
+              <button
+                onClick={() => socket.emit('host:bots', { delta: -botCount })}
+                disabled={botCount === 0}
+              >
+                clear
+              </button>
+            </div>
           </div>
         </div>
       )}

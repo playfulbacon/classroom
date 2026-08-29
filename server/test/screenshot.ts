@@ -73,6 +73,8 @@ async function main() {
     latest = snap;
   });
 
+  // Add 10 server-driven fake players from the host bar.
+  await page.click('.bot-controls button:has-text("+10")');
   await sleep(600);
   await page.screenshot({ path: path.join(OUT_DIR, '1-lobby.png') });
   console.log('lobby captured');

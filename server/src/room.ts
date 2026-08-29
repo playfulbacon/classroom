@@ -23,7 +23,14 @@ interface Player {
   name: string;
   color: string;
   socketId: string | null;
+  isBot?: boolean;
 }
+
+const BOT_NAMES = [
+  'Beep', 'Boop', 'Gizmo', 'Sprocket', 'Widget', 'Circuit', 'Bolt', 'Chip',
+  'Servo', 'Pixel', 'Turbo', 'Gadget', 'Dynamo', 'Ratchet', 'Cog', 'Zippy',
+  'Volt', 'Nano', 'Byte', 'Rusty',
+];
 
 function sanitizeName(name: unknown, fallback: string): string {
   if (typeof name !== 'string') return fallback;
@@ -42,6 +49,8 @@ export class Room {
   private game: GameModule | null = null;
   private options: RoomOptions = { rotation: false };
   private nextSlot = 1;
+  private botTicker: ReturnType<typeof setInterval> | null = null;
+  private botsCreated = 0;
   lastActivity = Date.now();
 
   constructor(io: Server, code: string) {
@@ -71,7 +80,8 @@ export class Room {
           id: p.slot,
           name: p.name,
           color: p.color,
-          connected: p.socketId !== null,
+          connected: p.isBot ? true : p.socketId !== null,
+          bot: p.isBot || undefined,
         })),
       options: this.options,
     };
@@ -170,6 +180,7 @@ export class Room {
           .sort((a, b) => a.slot - b.slot)
           .map((p) => ({ slot: p.slot, name: p.name, color: p.color })),
       options: this.options,
+      isBot: (slot: number) => !!this.bySlot.get(slot)?.isBot,
       emitStage: (snapshot: StageSnapshot) => {
         this.io.to(this.stageChannel).emit('snapshot', snapshot);
       },
@@ -186,7 +197,7 @@ export class Room {
     if (gameId !== 'los' && gameId !== 'puzzle') return;
     if (this.bySlot.size === 0) return;
     this.touch();
-    this.game?.dispose();
+    this.stopGame();
     if (options && typeof options === 'object') {
       const o = options as Partial<RoomOptions>;
       if (typeof o.rotation === 'boolean') this.options.rotation = o.rotation;
@@ -197,18 +208,75 @@ export class Room {
     this.game = gameId === 'los' ? new LastOneStanding(ctx) : new TeamPuzzles(ctx);
     this.broadcastRoom();
     this.game.start();
+    this.startBotTicker();
     this.sendMeAll();
+  }
+
+  private startBotTicker() {
+    if ([...this.bySlot.values()].every((p) => !p.isBot)) return;
+    this.botTicker = setInterval(() => {
+      const game = this.game;
+      if (!game) return;
+      for (const p of this.bySlot.values()) {
+        if (!p.isBot) continue;
+        const payload = game.botInput(p.slot);
+        if (payload) game.input(p.slot, payload);
+      }
+    }, 180);
+  }
+
+  private stopGame() {
+    this.game?.dispose();
+    this.game = null;
+    if (this.botTicker) clearInterval(this.botTicker);
+    this.botTicker = null;
   }
 
   toLobby(socket: Socket) {
     if (!socket.data.stage) return;
     this.touch();
-    this.game?.dispose();
-    this.game = null;
+    this.stopGame();
     this.gameId = null;
     this.phase = 'lobby';
     this.broadcastRoom();
     this.sendMeAll();
+  }
+
+  // Add (delta > 0) or remove (delta < 0) server-driven fake players.
+  adjustBots(socket: Socket, delta: unknown) {
+    if (!socket.data.stage || this.phase !== 'lobby') return;
+    const d = Math.trunc(typeof delta === 'number' && Number.isFinite(delta) ? delta : 0);
+    if (d === 0) return;
+    this.touch();
+    if (d > 0) {
+      const room = MAX_PLAYERS - this.players.size;
+      for (let i = 0; i < Math.min(d, room); i++) {
+        const slot = this.nextSlot++;
+        const base = BOT_NAMES[this.botsCreated % BOT_NAMES.length];
+        const suffix = Math.floor(this.botsCreated / BOT_NAMES.length);
+        this.botsCreated++;
+        const player: Player = {
+          token: `bot-${randomUUID()}`,
+          slot,
+          name: suffix > 0 ? `${base} ${suffix + 1}` : base,
+          color: colorForSlot(slot),
+          socketId: null,
+          isBot: true,
+        };
+        this.players.set(player.token, player);
+        this.bySlot.set(slot, player);
+      }
+    } else {
+      const bots = [...this.bySlot.values()]
+        .filter((p) => p.isBot)
+        .sort((a, b) => b.slot - a.slot)
+        .slice(0, -d);
+      for (const bot of bots) {
+        this.players.delete(bot.token);
+        this.bySlot.delete(bot.slot);
+      }
+    }
+    this.broadcastRoom();
   }
 
   input(socket: Socket, payload: InputPayload) {
@@ -240,7 +308,6 @@ export class Room {
   }
 
   dispose() {
-    this.game?.dispose();
-    this.game = null;
+    this.stopGame();
   }
 }

@@ -13,6 +13,7 @@ import type {
   LosSnapshot,
   MeState,
   PuzzleSnapshot,
+  RoomState,
   StageSnapshot,
 } from '../../shared/protocol';
 
@@ -88,8 +89,12 @@ async function main() {
   // --- Stage creates a room -------------------------------------------------
   const stage = connect();
   let latestSnapshot: StageSnapshot | null = null;
+  let latestRoom: RoomState | null = null;
   stage.on('snapshot', (s: StageSnapshot) => {
     latestSnapshot = s;
+  });
+  stage.on('room', (r: RoomState) => {
+    latestRoom = r;
   });
   const code = await new Promise<string>((resolve) => {
     stage.emit('stage:create', (res: { code: string }) => resolve(res.code));
@@ -285,10 +290,13 @@ async function main() {
         continue;
       }
       const step = bfsStep(snap, occupied, piece.cx, piece.cy, tx, ty);
-      if (step) {
+      const stepBlocked =
+        step && occupied.has((piece.cy + step[1]) * snap.cols + (piece.cx + step[0]));
+      if (step && (!stepBlocked || Math.random() > 0.35)) {
         bot.socket.emit('input', { t: 'dir', x: step[0], y: step[1] });
       } else {
-        // Fully boxed in: shuffle into any free neighbouring cell.
+        // Boxed in, or waiting on an occupied target (sometimes sidestep so
+        // swap/rotation wait-cycles between pieces can't deadlock forever).
         const options: [number, number][] = [];
         for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
           const nx = piece.cx + dx;
@@ -337,6 +345,71 @@ async function main() {
     bots.every((b) => b.me?.phase === 'lobby') ? true : null,
   );
   console.log('back to lobby OK');
+
+  // ==========================================================================
+  // Fake players (server-driven bots)
+  // ==========================================================================
+  stage.emit('host:bots', { delta: 8 });
+  const roomWithBots = await waitFor('8 fake players to join', 3000, () =>
+    latestRoom && latestRoom.players.length === NUM_PLAYERS + 8 ? latestRoom : null,
+  );
+  const fakeSlots = roomWithBots.players.filter((p) => p.bot).map((p) => p.id);
+  if (fakeSlots.length !== 8) fail(`expected 8 bot-flagged players, got ${fakeSlots.length}`);
+
+  // Fake players must move by themselves in Last One Standing.
+  stage.emit('host:start', { game: 'los' });
+  await waitFor('bot LOS play phase', 8000, () =>
+    latestSnapshot?.kind === 'los' && latestSnapshot.phase === 'play' ? true : null,
+  );
+  const beforeBots = new Map<number, [number, number]>();
+  for (const [slot, x, y] of (latestSnapshot as unknown as LosSnapshot).players) {
+    if (fakeSlots.includes(slot)) beforeBots.set(slot, [x, y]);
+  }
+  await sleep(2000);
+  {
+    const snap = latestSnapshot as unknown as LosSnapshot;
+    let moved = 0;
+    for (const [slot, x, y] of snap.players) {
+      const before = beforeBots.get(slot);
+      if (before && Math.hypot(x - before[0], y - before[1]) > 20) moved++;
+    }
+    if (moved < 6) fail(`fake players not moving on their own (moved=${moved}/8)`);
+    console.log(`bots: ${moved}/8 fake players moving autonomously in LOS`);
+  }
+  stage.emit('host:lobby');
+  await sleep(300);
+  stage.emit('host:bots', { delta: -8 });
+  await waitFor('fake players removed', 3000, () =>
+    latestRoom && latestRoom.players.length === NUM_PLAYERS ? true : null,
+  );
+  console.log('bots: add/remove OK');
+
+  // A room of ONLY fake players must solve Team Puzzles by itself.
+  const stage2 = connect();
+  let room2: RoomState | null = null;
+  let snap2: StageSnapshot | null = null;
+  stage2.on('room', (r: RoomState) => {
+    room2 = r;
+  });
+  stage2.on('snapshot', (s: StageSnapshot) => {
+    snap2 = s;
+  });
+  await new Promise<void>((resolve) => {
+    stage2.emit('stage:create', () => resolve());
+  });
+  stage2.emit('host:bots', { delta: 8 });
+  await waitFor('bots in second room', 3000, () =>
+    room2 && (room2 as RoomState).players.length === 8 ? true : null,
+  );
+  stage2.emit('host:start', { game: 'puzzle', options: { rotation: false } });
+  const botPuzzle = await waitFor('bots to solve the puzzle unaided', 60000, () => {
+    const s = snap2 as PuzzleSnapshot | null;
+    return s?.kind === 'puzzle' && s.phase === 'over' ? s : null;
+  });
+  if (botPuzzle.finished.length !== botPuzzle.groupCount) {
+    fail('bot-only puzzle ended without all groups locked');
+  }
+  console.log(`bots: solved a bots-only puzzle (${botPuzzle.groupCount} groups)`);
 
   console.log('\nSMOKE PASS ✅');
   cleanup();

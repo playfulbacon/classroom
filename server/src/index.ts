@@ -88,6 +88,10 @@ io.on('connection', (socket) => {
     roomOf(socket)?.toLobby(socket);
   });
 
+  socket.on('host:bots', (req: { delta?: number }) => {
+    roomOf(socket)?.adjustBots(socket, req?.delta);
+  });
+
   socket.on('input', (payload: InputPayload) => {
     roomOf(socket)?.input(socket, payload);
   });

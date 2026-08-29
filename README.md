@@ -31,6 +31,13 @@ npm run dev        # server on :3001, client on :5173
 Open `http://localhost:5173/stage` for the big screen, and `http://localhost:5173`
 on phones (or more browser tabs) to join with the room code.
 
+**Testing with fake players:** the stage lobby has a 🤖 control (`−` / `＋` /
+`+10` / `clear`) that adds server-driven bots. They play both games for real —
+in Last One Standing they wander, flee the shrinking edge and dash at rivals;
+in Team Puzzles they pathfind to their team's assembly spot, and when a group
+mixes bots with humans, the bots come and assemble around the real player.
+Add and remove them from the lobby between rounds.
+
 For phones on the same network, use the LAN URL Vite prints (e.g.
 `http://192.168.x.x:5173`) — the QR code on the stage encodes whatever host the
 stage page was opened on.

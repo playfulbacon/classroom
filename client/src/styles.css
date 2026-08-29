@@ -353,6 +353,35 @@ input {
   font-size: 15px;
 }
 
+.bot-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 14px;
+  border-left: 1px solid #2a3155;
+}
+
+.bot-controls span {
+  color: #b9c0e0;
+  font-size: 15px;
+  min-width: 52px;
+  text-align: center;
+}
+
+.bot-controls button {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: none;
+  background: #2a3155;
+  color: white;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.bot-controls button:disabled {
+  opacity: 0.4;
+}
+
 .host-corner {
   position: absolute;
   right: 12px;

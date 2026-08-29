@@ -183,6 +183,145 @@ export class TeamPuzzles implements GameModule {
     }
   }
 
+  // Fake-player AI: rotate upright if needed, then walk (BFS around occupied
+  // cells) to the spot implied by the group's leader piece — a human teammate
+  // when there is one, so bots come and assemble around real players.
+  botInput(slot: number): InputPayload | null {
+    if (this.phase !== 'play') return null;
+    const piece = this.bySlot.get(slot);
+    if (!piece || piece.locked) return null;
+    if (this.ctx.options.rotation && piece.rot !== 0 && Math.random() < 0.5) {
+      return { t: 'rot' };
+    }
+    const [ox, oy] = this.computeBotOrigins().get(piece.g)!;
+    const tx = ox + QUAD_DX[piece.q];
+    const ty = oy + QUAD_DY[piece.q];
+    if (tx === piece.cx && ty === piece.cy) return { t: 'dir', x: 0, y: 0 };
+    const step = this.bfsStep(piece.cx, piece.cy, tx, ty);
+    if (step) {
+      const blocked = this.grid[piece.cy + step[1]][piece.cx + step[0]];
+      // Waiting right next to an occupied target: usually hold, but sometimes
+      // sidestep — a bot standing pat here can be part of a swap/rotation
+      // cycle (e.g. two teammates on each other's target cells) that would
+      // otherwise never resolve.
+      if (!blocked || Math.random() > 0.35) {
+        return { t: 'dir', x: step[0], y: step[1] };
+      }
+    }
+    // Boxed in or breaking a wait cycle: shuffle toward any free neighbour.
+    const options: [number, number][] = [];
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const nx = piece.cx + dx;
+      const ny = piece.cy + dy;
+      if (nx < 0 || ny < 0 || nx >= this.cols || ny >= this.rows) continue;
+      if (!this.grid[ny][nx]) options.push([dx, dy]);
+    }
+    const pick = options[Math.floor(Math.random() * options.length)];
+    return pick ? { t: 'dir', x: pick[0], y: pick[1] } : { t: 'dir', x: 0, y: 0 };
+  }
+
+  // Assembly origins for every group, computed globally so all bots agree and
+  // no two groups ever claim overlapping 2x2 areas (overlap deadlocks: parked
+  // pieces never yield). Groups are resolved in ascending id order — later
+  // groups shift to the nearest clear spot. Each group's preferred origin is
+  // implied by its leader piece: a locked piece (phantom / finished) if any,
+  // else the lowest-id human piece so bots assemble around real players, else
+  // the lowest-id bot piece. Origins avoid the side columns so the 2x2 never
+  // contains a board corner (a corner target cell can be walled in by parked
+  // teammates).
+  private computeBotOrigins(): Map<number, [number, number]> {
+    const origins = new Map<number, [number, number]>();
+    const claimed: [number, number][] = [];
+    const overlaps = (ox: number, oy: number) =>
+      claimed.some(([cx2, cy2]) => Math.abs(ox - cx2) < 2 && Math.abs(oy - cy2) < 2);
+    const valid = (ox: number, oy: number, g: number) => {
+      if (overlaps(ox, oy)) return false;
+      for (let q = 0; q < 4; q++) {
+        const cell = this.grid[oy + QUAD_DY[q]][ox + QUAD_DX[q]];
+        if (cell && cell.locked && cell.g !== g) return false;
+      }
+      return true;
+    };
+    for (let g = 0; g < this.groupCount; g++) {
+      const group = this.pieces.filter((p) => p.g === g);
+      const leader =
+        group.find((p) => p.locked) ??
+        group
+          .filter((p) => p.slot !== null && !this.ctx.isBot(p.slot))
+          .sort((a, b) => a.id - b.id)[0] ??
+        group.slice().sort((a, b) => a.id - b.id)[0];
+      if (leader.locked) {
+        // Fixed by a phantom or an already-finished assembly; never shifts.
+        const ox = leader.cx - QUAD_DX[leader.q];
+        const oy = leader.cy - QUAD_DY[leader.q];
+        origins.set(g, [ox, oy]);
+        claimed.push([ox, oy]);
+        continue;
+      }
+      const ix = clampNum(leader.cx - QUAD_DX[leader.q], 1, this.cols - 3);
+      const iy = clampNum(leader.cy - QUAD_DY[leader.q], 0, this.rows - 2);
+      let best: [number, number] = [ix, iy];
+      if (!valid(ix, iy, g)) {
+        let bestDist = Infinity;
+        for (let oy = 0; oy <= this.rows - 2; oy++) {
+          for (let ox = 1; ox <= this.cols - 3; ox++) {
+            if (!valid(ox, oy, g)) continue;
+            const dist = Math.abs(ox - ix) + Math.abs(oy - iy);
+            if (dist < bestDist) {
+              best = [ox, oy];
+              bestDist = dist;
+            }
+          }
+        }
+      }
+      origins.set(g, best);
+      claimed.push(best);
+    }
+    return origins;
+  }
+
+  // First step of a shortest path, treating occupied cells as walls (the
+  // target counts as reachable even while occupied — the bot waits beside it).
+  private bfsStep(
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+  ): [number, number] | null {
+    const key = (x: number, y: number) => y * this.cols + x;
+    const start = key(fromX, fromY);
+    const target = key(toX, toY);
+    const prev = new Map<number, number>();
+    prev.set(start, -1);
+    const queue = [start];
+    while (queue.length > 0) {
+      const cell = queue.shift()!;
+      if (cell === target) {
+        let cur = cell;
+        for (;;) {
+          const p = prev.get(cur)!;
+          if (p === start) break;
+          if (p === -1) return null;
+          cur = p;
+        }
+        return [(cur % this.cols) - fromX, Math.floor(cur / this.cols) - fromY];
+      }
+      const cx = cell % this.cols;
+      const cy = Math.floor(cell / this.cols);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= this.cols || ny >= this.rows) continue;
+        const nk = key(nx, ny);
+        if (prev.has(nk)) continue;
+        if (this.grid[ny][nx] && nk !== target) continue;
+        prev.set(nk, cell);
+        queue.push(nk);
+      }
+    }
+    return null;
+  }
+
   personal(slot: number): Partial<MeState> {
     const piece = this.bySlot.get(slot);
     if (!piece) return { waiting: true };
