@@ -1,12 +1,18 @@
 // Visual check: boots the production server (serving client/dist), opens the
 // stage in headless Chromium, joins bot players over sockets, and captures
 // screenshots of the lobby and both games mid-play.
-// Run after `npm run build`:  npx tsx test/screenshot.ts [outDir]
+// Run after `npm run build`:  npm run screenshot [-- outDir]
+//
+// Uses `playwright-core`, which ships no browsers (so `npm install` stays
+// fast). The browser is found in this order:
+//   1. $CHROMIUM_PATH          explicit executable
+//   2. /opt/pw-browsers/chromium   the pre-installed build in CCR containers
+//   3. the Chrome / Edge already installed on this machine
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { chromium } from 'playwright';
+import { chromium, type Browser } from 'playwright-core';
 import { io, type Socket } from 'socket.io-client';
 import type { PuzzleSnapshot, StageSnapshot } from '../../shared/protocol';
 
@@ -20,6 +26,30 @@ const sockets: Socket[] = [];
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+async function launchBrowser(): Promise<Browser> {
+  const explicit = process.env.CHROMIUM_PATH;
+  if (explicit) return chromium.launch({ executablePath: explicit });
+
+  const containerChromium = '/opt/pw-browsers/chromium';
+  if (existsSync(containerChromium)) {
+    return chromium.launch({ executablePath: containerChromium });
+  }
+
+  const errors: string[] = [];
+  for (const channel of ['chrome', 'msedge'] as const) {
+    try {
+      return await chromium.launch({ channel });
+    } catch (err) {
+      errors.push(`${channel}: ${(err as Error).message.split('\n')[0]}`);
+    }
+  }
+  throw new Error(
+    'No browser found. Install Google Chrome or Microsoft Edge, or set ' +
+      'CHROMIUM_PATH to a Chromium executable.\n' +
+      errors.map((e) => `  ${e}`).join('\n'),
+  );
 }
 
 async function main() {
@@ -38,11 +68,7 @@ async function main() {
   });
   console.log('server up');
 
-  // Use the environment's pre-installed Chromium when the pinned Playwright
-  // version can't find its own build (e.g. CCR containers).
-  const browser = await chromium.launch({
-    executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium',
-  });
+  const browser = await launchBrowser();
   const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
   await page.goto(`${BASE}/stage`);
   const code = (await page.locator('.lobby-code-block .code').textContent({ timeout: 10000 }))!.trim();

@@ -10,7 +10,8 @@
     "build": "npm -w client run build",
     "start": "npm -w server run start",
     "typecheck": "npm -w server run typecheck && npm -w client run typecheck",
-    "smoke": "npm -w server run smoke"
+    "smoke": "npm -w server run smoke",
+    "screenshot": "npm -w server run screenshot"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

@@ -61,7 +61,20 @@ only*; phones exchange a few tiny messages per second.
 npm run smoke      # boots the real server, simulates a stage + 12 phones,
                    # plays both games end-to-end over real sockets
 npm run typecheck
+npm run screenshot # after `npm run build`: opens the stage in a headless
+                   # browser and saves lobby + both games to ./screenshots
 ```
+
+The screenshot script uses `playwright-core`, which deliberately ships no
+browsers so `npm install` stays quick. It drives the Chrome or Edge already on
+your machine; set `CHROMIUM_PATH` to point at a different Chromium build.
+
+## Day-to-day editing
+
+`npm run dev` watches for changes: edit anything under `client/src` and the
+browser updates in place; edit `server/src` or `shared/` and the server
+restarts itself (players will need to rejoin). You only need to run
+`npm install` again when `package.json` changes.
 
 ## Architecture
 
