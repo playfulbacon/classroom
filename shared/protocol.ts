@@ -15,6 +15,12 @@ export interface PlayerInfo {
 
 export interface RoomOptions {
   rotation: boolean; // Team Puzzles: require correct piece orientation
+  puzzleW: number; // Team Puzzles: puzzle width in cells (team size = W*H)
+  puzzleH: number; // Team Puzzles: puzzle height in cells
+}
+
+export interface RoomImageInfo {
+  id: string; // fetch at GET /art/{roomCode}/{id}
 }
 
 export interface RoomState {
@@ -23,6 +29,7 @@ export interface RoomState {
   game: GameId | null;
   players: PlayerInfo[];
   options: RoomOptions;
+  images: RoomImageInfo[]; // teacher-uploaded puzzle pictures, upload order
 }
 
 // ---------------------------------------------------------------------------
@@ -70,11 +77,12 @@ export interface LosSnapshot {
 // Team Puzzles
 // ---------------------------------------------------------------------------
 
-// Quadrants: 0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right
+// Piece position within its puzzle: q in [0, gw*gh), reading order —
+// qx = q % gw, qy = floor(q / gw).
 export interface PuzzlePieceSnap {
   id: number; // piece id (== owner slot for real pieces; negative for phantoms)
-  g: number; // group id, 0-based — also the seed for the group's artwork
-  q: number; // quadrant 0..3
+  g: number; // group id, 0-based — also the seed for procedural artwork
+  q: number; // cell index within the puzzle (reading order)
   cx: number; // grid cell x
   cy: number; // grid cell y
   rot: number; // 0..3 quarter turns
@@ -90,8 +98,12 @@ export interface PuzzleSnapshot {
   countdown: number;
   cols: number;
   rows: number;
+  gw: number; // puzzle width in cells
+  gh: number; // puzzle height in cells
   pieces: PuzzlePieceSnap[];
   groupCount: number;
+  // group id → uploaded image id (null = procedural artwork from the group id)
+  groupImages: (string | null)[];
   // group ids in finishing order
   finished: number[];
 }
@@ -114,7 +126,10 @@ export interface MeState {
   placement?: number; // final rank, 1 = winner
   // Team Puzzles
   group?: number;
-  quadrant?: number;
+  quadrant?: number; // this piece's q index within the puzzle
+  gw?: number;
+  gh?: number;
+  imageId?: string | null; // uploaded picture for this team, null = procedural
   rotationEnabled?: boolean;
   teamRank?: number; // 1-based finish position once the team locks
 }
@@ -170,9 +185,14 @@ export interface HostStartRequest {
 //  'host:start'   (HostStartRequest)
 //  'host:lobby'   ()
 //  'host:bots'    ({delta: number}) — add/remove fake players (lobby only)
+//  'host:art:add'    ({data: base64 jpeg/png}, cb {ok, id?, err?}) — stage only
+//  'host:art:remove' ({id: string}) — stage only
 //  'input'        (InputPayload)
 
 export const MAX_PLAYERS = 70;
+export const MIN_PUZZLE_DIM = 1;
+export const MAX_PUZZLE_DIM = 5;
+export const MAX_ROOM_IMAGES = 20;
 
 export function colorForSlot(slot: number): string {
   const hue = (slot * 137.508) % 360;

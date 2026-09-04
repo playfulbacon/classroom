@@ -10,6 +10,9 @@ export default defineConfig({
         target: 'http://localhost:3001',
         ws: true,
       },
+      '/art': {
+        target: 'http://localhost:3001',
+      },
     },
   },
 });

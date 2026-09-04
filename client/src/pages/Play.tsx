@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { BuzzType, JoinResponse, MeState, RoomState } from '../../../shared/protocol';
-import { drawQuadrant } from '../art';
+import { drawFragment, getRoomImage, groupArtCanvas } from '../art';
 import { loadCreds, saveCreds, socket } from '../socket';
 
 const JOY_RADIUS = 90; // px of drag for full deflection
@@ -120,16 +120,52 @@ function TouchSurface({ onVector, onRelease, onFlick, onTap, onTouchState }: Tou
   );
 }
 
-function PiecePreview({ group, quadrant }: { group: number; quadrant: number }) {
+interface PiecePreviewProps {
+  group: number;
+  quadrant: number;
+  gw: number;
+  gh: number;
+  imageId?: string | null;
+}
+
+function PiecePreview({ group, quadrant, gw, gh, imageId }: PiecePreviewProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    drawQuadrant(ctx, group, quadrant, 0, 0, canvas.width);
-  }, [group, quadrant]);
+    let cancelled = false;
+    const render = () => {
+      if (cancelled) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      let source: CanvasImageSource;
+      let srcW: number;
+      let srcH: number;
+      if (imageId) {
+        const code = loadCreds()?.code ?? '';
+        const img = getRoomImage(code, imageId, render); // re-render on load
+        if (!img) {
+          ctx.fillStyle = '#39406b';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          return;
+        }
+        source = img;
+        srcW = img.naturalWidth;
+        srcH = img.naturalHeight;
+      } else {
+        const art = groupArtCanvas(group, gw, gh);
+        source = art;
+        srcW = art.width;
+        srcH = art.height;
+      }
+      drawFragment(ctx, source, srcW, srcH, gw, gh, quadrant, 0, 0, canvas.width);
+    };
+    render();
+    return () => {
+      cancelled = true;
+    };
+  }, [group, quadrant, gw, gh, imageId]);
   return <canvas ref={ref} width={170} height={170} className="piece-preview" />;
 }
 
@@ -336,7 +372,13 @@ export function Play() {
         <div className="status-screen" style={{ background: '#245c36' }}>
           {reconnectBanner}
           {me.group !== undefined && me.quadrant !== undefined && (
-            <PiecePreview group={me.group} quadrant={me.quadrant} />
+            <PiecePreview
+              group={me.group}
+              quadrant={me.quadrant}
+              gw={me.gw ?? 2}
+              gh={me.gh ?? 2}
+              imageId={me.imageId}
+            />
           )}
           <h2>🧩 Team complete!</h2>
           <div className="sub">Your team finished #{me.teamRank}.</div>
@@ -353,9 +395,18 @@ export function Play() {
           onTouchState={(down) => sendInput({ t: 'touch', down })}
         />
         <div className="controller-hud">
-          <div className="hint">This is YOUR piece — find its three partners on the big screen</div>
+          <div className="hint">
+            This is YOUR piece — find its {(me.gw ?? 2) * (me.gh ?? 2) - 1} partners on the big
+            screen
+          </div>
           {me.group !== undefined && me.quadrant !== undefined && (
-            <PiecePreview group={me.group} quadrant={me.quadrant} />
+            <PiecePreview
+              group={me.group}
+              quadrant={me.quadrant}
+              gw={me.gw ?? 2}
+              gh={me.gh ?? 2}
+              imageId={me.imageId}
+            />
           )}
           <div className="hint">
             Swipe &amp; hold to slide{me.rotationEnabled ? ' · tap to rotate' : ''}

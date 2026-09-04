@@ -206,11 +206,11 @@ async function main() {
     }
   }
 
-  // Bots steer toward per-group 2x2 anchors using BFS around occupied cells
-  // (greedy straight-line seeking deadlocks against parked pieces; a student
-  // looking at the board would just steer around them).
-  const QUAD_DX = [0, 1, 0, 1];
-  const QUAD_DY = [0, 0, 1, 1];
+  // Bots steer toward per-group gw x gh anchors using BFS around occupied
+  // cells (greedy straight-line seeking deadlocks against parked pieces; a
+  // student looking at the board would just steer around them).
+  const pqx = (q: number, gw: number) => q % gw;
+  const pqy = (q: number, gw: number) => Math.floor(q / gw);
   const bfsStep = (
     snap: PuzzleSnapshot,
     occupied: Set<number>,
@@ -258,20 +258,20 @@ async function main() {
     const bySlot = new Map(snap.pieces.map((p) => [p.id, p] as const));
     // Target origin per group: a group with locked (phantom) pieces must
     // assemble at the phantom's origin; other groups get non-overlapping
-    // anchors tiled in 3x3 blocks so bot teams never fight over cells.
+    // anchors tiled so bot teams never fight over cells.
     const groupOrigin = new Map<number, [number, number]>();
     for (const p of snap.pieces) {
       if (p.locked && !groupOrigin.has(p.g)) {
-        groupOrigin.set(p.g, [p.cx - QUAD_DX[p.q], p.cy - QUAD_DY[p.q]]);
+        groupOrigin.set(p.g, [p.cx - pqx(p.q, snap.gw), p.cy - pqy(p.q, snap.gw)]);
       }
     }
-    // Anchor slots on a stride-3 grid, x starting at 1 so no 2x2 area ever
+    // Anchor slots on a stride grid, x starting at 1 so no area ever
     // contains a board corner — a corner target cell can be permanently
-    // walled in by two parked teammates.
+    // walled in by parked teammates.
     const anchorXs: number[] = [];
-    for (let x = 1; x <= snap.cols - 3; x += 3) anchorXs.push(x);
+    for (let x = 1; x <= snap.cols - snap.gw - 1; x += snap.gw + 1) anchorXs.push(x);
     const anchorYs: number[] = [];
-    for (let y = 0; y <= snap.rows - 2; y += 3) anchorYs.push(y);
+    for (let y = 0; y <= snap.rows - snap.gh; y += snap.gh + 1) anchorYs.push(y);
     for (const p of snap.pieces) {
       if (groupOrigin.has(p.g)) continue;
       const ox = anchorXs[p.g % anchorXs.length];
@@ -283,8 +283,8 @@ async function main() {
       const piece = bySlot.get(bot.slot);
       if (!piece || piece.locked) continue;
       const [ox, oy] = groupOrigin.get(piece.g)!;
-      const tx = ox + QUAD_DX[piece.q];
-      const ty = oy + QUAD_DY[piece.q];
+      const tx = ox + pqx(piece.q, snap.gw);
+      const ty = oy + pqy(piece.q, snap.gw);
       if (tx === piece.cx && ty === piece.cy) {
         bot.socket.emit('input', { t: 'dir', x: 0, y: 0 });
         continue;
@@ -310,28 +310,52 @@ async function main() {
     }
   }, 120);
 
-  const donePuzzle = await waitFor('all puzzle groups to lock', 60000, () => {
+  const dumpBoard = (label: string) => {
     const snap = latestSnapshot as PuzzleSnapshot | null;
-    return snap?.kind === 'puzzle' && snap.phase === 'over' ? snap : null;
-  });
+    if (!snap || snap.kind !== 'puzzle') return;
+    const board: string[][] = Array.from({ length: snap.rows }, () =>
+      Array(snap.cols).fill(' . '),
+    );
+    for (const p of snap.pieces) {
+      board[p.cy][p.cx] = `${p.g}${String.fromCharCode(97 + p.q)}${p.locked ? '*' : ' '}`;
+    }
+    console.log(`[${label}] finished=[${snap.finished}]`);
+    console.log(board.map((r) => r.join(' ')).join('\n'));
+  };
+  const donePuzzle = await (async () => {
+    const start = Date.now();
+    for (;;) {
+      const snap = latestSnapshot as PuzzleSnapshot | null;
+      if (snap?.kind === 'puzzle' && snap.phase === 'over') return snap;
+      if (Date.now() - start > 60000) {
+        dumpBoard('stuck');
+        fail('timed out waiting for all puzzle groups to lock');
+      }
+      await sleep(50);
+    }
+  })();
   clearInterval(solver);
   await sleep(300); // let the final me/teamRank events land
-  // Every locked group must form an exact 2x2 with one piece per quadrant.
-  for (let g = 0; g < donePuzzle.groupCount; g++) {
-    const members = donePuzzle.pieces.filter((p) => p.g === g);
-    if (members.length !== 4) fail(`group ${g} has ${members.length} pieces`);
-    const origins = new Set(
-      members.map((p) => `${p.cx - QUAD_DX[p.q]},${p.cy - QUAD_DY[p.q]}`),
-    );
-    const quads = new Set(members.map((p) => p.q));
-    if (origins.size !== 1 || quads.size !== 4) {
-      fail(
-        `group ${g} locked without forming a 2x2: ${members
-          .map((p) => `q${p.q}@(${p.cx},${p.cy})`)
-          .join(' ')}`,
+  // Every locked group must form an exact gw x gh with one piece per position.
+  const assertGeometry = (snap: PuzzleSnapshot, label: string) => {
+    const K = snap.gw * snap.gh;
+    for (let g = 0; g < snap.groupCount; g++) {
+      const members = snap.pieces.filter((p) => p.g === g);
+      if (members.length !== K) fail(`${label}: group ${g} has ${members.length} pieces`);
+      const origins = new Set(
+        members.map((p) => `${p.cx - pqx(p.q, snap.gw)},${p.cy - pqy(p.q, snap.gw)}`),
       );
+      const quads = new Set(members.map((p) => p.q));
+      if (origins.size !== 1 || quads.size !== K) {
+        fail(
+          `${label}: group ${g} locked without forming ${snap.gw}x${snap.gh}: ${members
+            .map((p) => `q${p.q}@(${p.cx},${p.cy})`)
+            .join(' ')}`,
+        );
+      }
     }
-  }
+  };
+  assertGeometry(donePuzzle, '2x2');
   if (donePuzzle.finished.length !== donePuzzle.groupCount) {
     fail('puzzle over but finished list incomplete');
   }
@@ -384,6 +408,60 @@ async function main() {
   );
   console.log('bots: add/remove OK');
 
+  // ==========================================================================
+  // Puzzle pictures (upload / serve / assign / remove)
+  // ==========================================================================
+  const fakeJpeg = (tag: string) => Buffer.from(`fake-jpeg-bytes-${tag}`).toString('base64');
+  {
+    const res = await new Promise<{ ok: boolean }>((resolve) => {
+      bots[0].socket.emit('host:art:add', { data: fakeJpeg('sneaky') }, resolve);
+    });
+    if (res.ok) fail('a non-stage socket was allowed to upload art');
+  }
+  const artIds: string[] = [];
+  for (const tag of ['one', 'two']) {
+    const res = await new Promise<{ ok: boolean; id?: string; err?: string }>((resolve) => {
+      stage.emit('host:art:add', { data: fakeJpeg(tag) }, resolve);
+    });
+    if (!res.ok || !res.id) fail(`art upload failed: ${res.err}`);
+    artIds.push(res.id);
+  }
+  await waitFor('room state to list images', 3000, () =>
+    latestRoom && latestRoom.images.length === 2 ? true : null,
+  );
+  {
+    const httpRes = await fetch(`${BASE_URL}/art/${code}/${artIds[0]}`);
+    if (!httpRes.ok) fail(`GET /art returned ${httpRes.status}`);
+    const body = Buffer.from(await httpRes.arrayBuffer());
+    if (!body.equals(Buffer.from('fake-jpeg-bytes-one'))) fail('served art bytes differ');
+    const miss = await fetch(`${BASE_URL}/art/${code}/nope`);
+    if (miss.status !== 404) fail('missing art should 404');
+  }
+  stage.emit('host:start', { game: 'puzzle' });
+  const imgPuzzle = await waitFor('puzzle with images', 5000, () =>
+    latestSnapshot?.kind === 'puzzle' ? (latestSnapshot as PuzzleSnapshot) : null,
+  );
+  if (imgPuzzle.groupImages[0] !== artIds[0] || imgPuzzle.groupImages[1] !== artIds[1]) {
+    fail(`first groups did not get the uploaded images: ${imgPuzzle.groupImages}`);
+  }
+  if (imgPuzzle.groupCount > 2 && imgPuzzle.groupImages[2] !== null) {
+    fail('extra groups should fall back to procedural art (null)');
+  }
+  {
+    const inG0 = bots.find((b) => b.me?.game === 'puzzle' && b.me.group === 0);
+    if (!inG0) fail('no player found in group 0');
+    if (inG0.me?.imageId !== artIds[0]) {
+      fail(`group-0 phone got imageId ${inG0.me?.imageId}, expected ${artIds[0]}`);
+    }
+  }
+  stage.emit('host:lobby');
+  await sleep(300);
+  for (const id of artIds) stage.emit('host:art:remove', { id });
+  await waitFor('images removed', 3000, () =>
+    latestRoom && latestRoom.images.length === 0 ? true : null,
+  );
+  console.log('art: upload/serve/assign/remove OK');
+
   // A room of ONLY fake players must solve Team Puzzles by itself.
   const stage2 = connect();
   let room2: RoomState | null = null;
@@ -401,15 +479,102 @@ async function main() {
   await waitFor('bots in second room', 3000, () =>
     room2 && (room2 as RoomState).players.length === 8 ? true : null,
   );
-  stage2.emit('host:start', { game: 'puzzle', options: { rotation: false } });
-  const botPuzzle = await waitFor('bots to solve the puzzle unaided', 60000, () => {
+  // 8 bots on a 3x2 puzzle: two teams of 4 players + 2 phantoms each — the
+  // uneven-team path with a non-square puzzle, solved fully unaided.
+  stage2.emit('host:start', {
+    game: 'puzzle',
+    options: { rotation: false, puzzleW: 3, puzzleH: 2 },
+  });
+  const botPuzzle = await waitFor('bots to solve the 3x2 puzzle unaided', 90000, () => {
     const s = snap2 as PuzzleSnapshot | null;
     return s?.kind === 'puzzle' && s.phase === 'over' ? s : null;
   });
+  if (botPuzzle.gw !== 3 || botPuzzle.gh !== 2) {
+    fail(`expected a 3x2 puzzle, got ${botPuzzle.gw}x${botPuzzle.gh}`);
+  }
+  if (botPuzzle.groupCount !== 2) fail(`expected 2 groups, got ${botPuzzle.groupCount}`);
+  const phantomCount = botPuzzle.pieces.filter((p) => p.id < 0).length;
+  if (phantomCount !== 4) fail(`expected 4 phantom pieces, got ${phantomCount}`);
   if (botPuzzle.finished.length !== botPuzzle.groupCount) {
     fail('bot-only puzzle ended without all groups locked');
   }
-  console.log(`bots: solved a bots-only puzzle (${botPuzzle.groupCount} groups)`);
+  assertGeometry(botPuzzle, '3x2 bots');
+  console.log(`bots: solved a bots-only 3x2 puzzle (${botPuzzle.groupCount} groups, 4 phantoms)`);
+
+  // ==========================================================================
+  // Idle-human regression: bots must not freeze against a player who never
+  // moves (the reported stuck-bot bug).
+  // ==========================================================================
+  const stage3 = connect();
+  let room3: RoomState | null = null;
+  let snap3: StageSnapshot | null = null;
+  stage3.on('room', (r: RoomState) => {
+    room3 = r;
+  });
+  stage3.on('snapshot', (s: StageSnapshot) => {
+    snap3 = s;
+  });
+  const code3 = await new Promise<string>((resolve) => {
+    stage3.emit('stage:create', (res: { code: string }) => resolve(res.code));
+  });
+  const idle = connect();
+  const idleJoin = await new Promise<JoinResponse>((resolve) => {
+    idle.emit('join', { code: code3, name: 'Idle' }, resolve);
+  });
+  if (!idleJoin.ok || !idleJoin.playerId) fail('idle player failed to join');
+  stage3.emit('host:bots', { delta: 7 });
+  await waitFor('bots in third room', 3000, () =>
+    room3 && (room3 as RoomState).players.length === 8 ? true : null,
+  );
+  stage3.emit('host:start', { game: 'puzzle', options: { puzzleW: 2, puzzleH: 2 } });
+  const idleSlot = idleJoin.playerId;
+  // The all-bot team must finish even though the idle player's piece sits
+  // parked somewhere on the board the whole round.
+  const withIdle = await waitFor('all-bot team to finish despite idle player', 60000, () => {
+    const s = snap3 as PuzzleSnapshot | null;
+    if (!s || s.kind !== 'puzzle') return null;
+    const idlePiece = s.pieces.find((p) => p.id === idleSlot);
+    if (!idlePiece) return null;
+    const done = s.finished.some((g) => g !== idlePiece.g);
+    return done ? s : null;
+  });
+  {
+    const idlePiece = withIdle.pieces.find((p) => p.id === idleSlot)!;
+    // The idle player's bot teammates stay live: under the one-runner-at-a-
+    // time scheme most of them deliberately wait far from the area, so the
+    // meaningful property is that none of them ends up PERSISTENTLY entombed
+    // (an unlocked piece with zero free neighbours, stuck in the same spot
+    // across several seconds, was exactly the reported freeze). A moment of
+    // being boxed in by movable neighbours is fine — they walk away.
+    let entombedStreak = new Map<number, number>();
+    for (let sample = 0; sample < 5; sample++) {
+      await sleep(1200);
+      const s = snap3 as PuzzleSnapshot | null;
+      if (!s || s.kind !== 'puzzle') fail('lost puzzle snapshot in idle room');
+      const occupied = new Set(s!.pieces.map((p) => p.cy * s!.cols + p.cx));
+      const next = new Map<number, number>();
+      for (const p of s!.pieces.filter((p2) => p2.g === idlePiece.g && p2.id !== idleSlot)) {
+        if (p.locked) continue;
+        let exits = 0;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+          const nx = p.cx + dx;
+          const ny = p.cy + dy;
+          if (nx < 0 || ny < 0 || nx >= s!.cols || ny >= s!.rows) continue;
+          if (!occupied.has(ny * s!.cols + nx)) exits++;
+        }
+        if (exits === 0) {
+          const pos = p.cy * s!.cols + p.cx;
+          const streak = (entombedStreak.get(p.id) === pos ? 1 : 0) + 1;
+          if (streak >= 2 && sample === 4) {
+            fail(`idle group bot at (${p.cx},${p.cy}) is persistently entombed`);
+          }
+          next.set(p.id, pos);
+        }
+      }
+      entombedStreak = next;
+    }
+  }
+  console.log('bots: no freeze against an idle human, teammates settle around them');
 
   console.log('\nSMOKE PASS ✅');
   cleanup();

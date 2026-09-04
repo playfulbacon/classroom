@@ -311,12 +311,70 @@ input {
   left: 0;
   right: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 14px;
   padding: 14px;
   background: rgba(10, 12, 24, 0.85);
   z-index: 10;
+}
+
+.art-bar {
+  position: absolute;
+  bottom: 64px;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 14px;
+  z-index: 10;
+}
+
+.art-bar .add-art {
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px dashed #4a5480;
+  background: rgba(42, 49, 85, 0.6);
+  color: #d5daf5;
+  font-size: 15px;
+}
+
+.art-thumb {
+  position: relative;
+  width: 52px;
+  height: 52px;
+}
+
+.art-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 2px solid #2a3155;
+}
+
+.art-thumb button {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: #e5484d;
+  color: white;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+}
+
+.art-hint {
+  color: #9aa3c7;
+  font-size: 14px;
 }
 
 .host-bar button {

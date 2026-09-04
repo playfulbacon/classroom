@@ -18,6 +18,7 @@ export interface GameCtx {
   slots(): SlotInfo[];
   options: RoomOptions;
   isBot(slot: number): boolean;
+  imageIds(): string[]; // teacher-uploaded pictures, upload order
   emitStage(snapshot: StageSnapshot): void;
   emitMe(slot: number): void; // room re-sends 'me' built from game.personal()
   buzz(slot: number, type: BuzzType): void;

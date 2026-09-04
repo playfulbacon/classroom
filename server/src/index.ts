@@ -15,6 +15,21 @@ const io = new Server(httpServer, {
   cors: { origin: true },
   // phones on flaky school wi-fi: be generous before declaring death
   pingTimeout: 30_000,
+  // puzzle picture uploads arrive over the socket as base64 jpeg
+  maxHttpBufferSize: 4_000_000,
+});
+
+// Teacher-uploaded puzzle pictures (kept in room memory).
+app.get('/art/:code/:id', (req, res) => {
+  const room = rooms.get(String(req.params.code).toUpperCase());
+  const image = room?.getImage(String(req.params.id));
+  if (!image) {
+    res.status(404).end();
+    return;
+  }
+  res.type('jpeg');
+  res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+  res.send(image);
 });
 
 // Serve the built client when it exists (production single-process deploy).
@@ -90,6 +105,18 @@ io.on('connection', (socket) => {
 
   socket.on('host:bots', (req: { delta?: number }) => {
     roomOf(socket)?.adjustBots(socket, req?.delta);
+  });
+
+  socket.on('host:options', (req: unknown) => {
+    roomOf(socket)?.setOptions(socket, req);
+  });
+
+  socket.on('host:art:add', (req: { data?: string }, cb?: (res: unknown) => void) => {
+    roomOf(socket)?.addArt(socket, req?.data, cb);
+  });
+
+  socket.on('host:art:remove', (req: { id?: string }) => {
+    roomOf(socket)?.removeArt(socket, req?.id);
   });
 
   socket.on('input', (payload: InputPayload) => {

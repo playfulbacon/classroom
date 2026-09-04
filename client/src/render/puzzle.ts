@@ -1,6 +1,12 @@
 import type { PuzzleSnapshot, RoomState } from '../../../shared/protocol';
-import { drawQuadrant, groupArtCanvas } from '../art';
+import { coverCrop, drawFragment, getRoomImage, groupArtCanvas } from '../art';
 import { roundRect } from './los';
+
+interface PieceSource {
+  source: CanvasImageSource;
+  srcW: number;
+  srcH: number;
+}
 
 interface DisplayPiece {
   x: number; // display position in cell units
@@ -62,7 +68,20 @@ export class PuzzleRenderer {
     }
   }
 
-  draw(ctx: CanvasRenderingContext2D, w: number, h: number, _room: RoomState | null) {
+  // The team's picture: uploaded image (null while still downloading) or the
+  // procedural fallback.
+  private sourceFor(snap: PuzzleSnapshot, g: number, room: RoomState | null): PieceSource | null {
+    const imageId = snap.groupImages[g];
+    if (imageId && room) {
+      const img = getRoomImage(room.code, imageId);
+      if (!img) return null;
+      return { source: img, srcW: img.naturalWidth, srcH: img.naturalHeight };
+    }
+    const canvas = groupArtCanvas(g, snap.gw, snap.gh);
+    return { source: canvas, srcW: canvas.width, srcH: canvas.height };
+  }
+
+  draw(ctx: CanvasRenderingContext2D, w: number, h: number, room: RoomState | null) {
     const snap = this.snap;
     if (!snap) return;
     const now = performance.now();
@@ -151,7 +170,25 @@ export class PuzzleRenderer {
       ctx.fill();
       ctx.shadowBlur = 0;
       ctx.clip();
-      drawQuadrant(ctx, p.g, p.q, -size / 2, -size / 2, size);
+      const src = this.sourceFor(snap, p.g, room);
+      if (src) {
+        drawFragment(
+          ctx,
+          src.source,
+          src.srcW,
+          src.srcH,
+          snap.gw,
+          snap.gh,
+          p.q,
+          -size / 2,
+          -size / 2,
+          size,
+        );
+      } else {
+        // Image still downloading — neutral placeholder for a frame or two.
+        ctx.fillStyle = '#39406b';
+        ctx.fillRect(-size / 2, -size / 2, size, size);
+      }
       ctx.restore();
       // Border drawn outside the clip.
       ctx.save();
@@ -177,7 +214,7 @@ export class PuzzleRenderer {
     }
     ctx.globalAlpha = 1;
 
-    this.drawHud(ctx, w, h, snap, now);
+    this.drawHud(ctx, w, h, snap, now, room);
   }
 
   private drawHud(
@@ -186,6 +223,7 @@ export class PuzzleRenderer {
     h: number,
     snap: PuzzleSnapshot,
     now: number,
+    roomState: RoomState | null,
   ) {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
@@ -204,7 +242,11 @@ export class PuzzleRenderer {
       ctx.fillStyle = 'rgba(255,255,255,0.95)';
       ctx.fillText(String(snap.countdown), w / 2, h / 2);
       ctx.font = `700 ${Math.round(h * 0.04)}px system-ui`;
-      ctx.fillText('Find your three matching pieces!', w / 2, h * 0.78);
+      ctx.fillText(
+        `Find your ${snap.gw * snap.gh - 1} matching piece${snap.gw * snap.gh > 2 ? 's' : ''}!`,
+        w / 2,
+        h * 0.78,
+      );
     } else if (this.goShownAt && now - this.goShownAt < 800) {
       ctx.font = `800 ${Math.round(h * 0.25)}px system-ui`;
       ctx.fillStyle = '#8aff9e';
@@ -224,9 +266,22 @@ export class PuzzleRenderer {
       const top = snap.finished.slice(0, 5);
       top.forEach((g, i) => {
         const y = h / 2 - ph * 0.22 + i * h * 0.085;
-        const art = groupArtCanvas(g);
         const iconSize = h * 0.06;
-        ctx.drawImage(art, w / 2 - pw * 0.22 - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
+        const src = this.sourceFor(snap, g, roomState);
+        if (src) {
+          const c = coverCrop(src.srcW, src.srcH, 1, 1);
+          ctx.drawImage(
+            src.source,
+            c.sx,
+            c.sy,
+            c.sw,
+            c.sh,
+            w / 2 - pw * 0.22 - iconSize / 2,
+            y - iconSize / 2,
+            iconSize,
+            iconSize,
+          );
+        }
         ctx.font = `700 ${Math.round(h * 0.042)}px system-ui`;
         ctx.textAlign = 'left';
         ctx.fillText(`${medals[i] ?? `${i + 1}.`} Team ${g + 1}`, w / 2 - pw * 0.1, y);

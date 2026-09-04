@@ -15,11 +15,26 @@ Bump rivals off the edge, bounce off pinball bumpers, survive the wind gusts,
 bumper frenzies and turbo events. Last player on the floor wins.
 
 ### 🧩 Team Puzzles
-Every player is one quarter of a picture. Find the three classmates whose
-pieces match yours on the big board, navigate the crowd, and snap together
-into a 2×2 image — first team to assemble wins. Movement feels continuous but
+Every player is one piece of a picture. Find the classmates whose pieces
+match yours on the big board, navigate the crowd, and snap together into the
+full image — first team to assemble wins. Movement feels continuous but
 settles onto a grid (Wilmot-style). Optional hard mode: pieces spawn rotated
 and a tap rotates your piece.
+
+- **Puzzle size is configurable** from the lobby (width × height in cells,
+  1–5 per axis) — team size is width × height, e.g. 3×2 puzzles make teams
+  of six.
+- **Upload your own pictures** with the 📷 button in the lobby: each photo
+  becomes one team's puzzle (center crop-to-filled to the puzzle shape and
+  split evenly across the pieces). Teams without a photo get distinctive
+  procedural artwork, so every team's picture stays unique. Photos are
+  downscaled in the browser before upload and served from room memory at
+  `/art/{room}/{id}`.
+- **Any class size works**: teams are dealt as evenly as possible
+  (`ceil(N / teamSize)` teams, sizes differing by at most one), and short
+  teams get pre-locked *phantom* pieces already sitting on the board that
+  the team assembles around. If another team ever locks its puzzle on top of
+  a phantom's assembly area, the phantoms slide to a fresh spot.
 
 ## Quick start
 
@@ -58,8 +73,10 @@ only*; phones exchange a few tiny messages per second.
 ## Tests
 
 ```bash
-npm run smoke      # boots the real server, simulates a stage + 12 phones,
-                   # plays both games end-to-end over real sockets
+npm run smoke      # white-box puzzle unit tests, then an end-to-end run:
+                   # a real server, a stage + 12 simulated phones playing both
+                   # games, bots solving a 3x2 puzzle unaided, image
+                   # upload/serve round-trip, and an idle-player regression
 npm run typecheck
 ```
 

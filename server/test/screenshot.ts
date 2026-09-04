@@ -75,6 +75,25 @@ async function main() {
 
   // Add 10 server-driven fake players from the host bar.
   await page.click('.bot-controls button:has-text("+10")');
+  await sleep(400);
+  // Puzzle size 3x2 via the width stepper.
+  await page.click('button[aria-label="Wider puzzle"]');
+  await sleep(200);
+  // Upload two puzzle pictures — screenshots of the page itself make handy
+  // recognisable photos.
+  const photo1 = await page.screenshot({ type: 'jpeg', quality: 80 });
+  await page.setInputFiles('input[type=file]', {
+    name: 'photo1.jpg',
+    mimeType: 'image/jpeg',
+    buffer: photo1,
+  });
+  await sleep(500);
+  const photo2 = await page.screenshot({ type: 'jpeg', quality: 80, clip: { x: 300, y: 100, width: 800, height: 500 } });
+  await page.setInputFiles('input[type=file]', {
+    name: 'photo2.jpg',
+    mimeType: 'image/jpeg',
+    buffer: photo2,
+  });
   await sleep(600);
   await page.screenshot({ path: path.join(OUT_DIR, '1-lobby.png') });
   console.log('lobby captured');
@@ -101,8 +120,8 @@ async function main() {
 
   // Steer two teams to completion for confetti/locked visuals (BFS around
   // occupied cells, anchors clear of board corners); other pieces roam.
-  const QUAD_DX = [0, 1, 0, 1];
-  const QUAD_DY = [0, 0, 1, 1];
+  const pqx = (q: number, gw: number) => q % gw;
+  const pqy = (q: number, gw: number) => Math.floor(q / gw);
   const bfsStep = (
     snap: PuzzleSnapshot,
     occupied: Set<number>,
@@ -152,10 +171,10 @@ async function main() {
       const piece = byId.get(bot.slot);
       if (!piece || piece.locked) continue;
       if (piece.g <= 1) {
-        const ox = 1 + piece.g * 3;
+        const ox = 1 + piece.g * (snap.gw + 1);
         const oy = 1;
-        const tx = Math.min(ox + QUAD_DX[piece.q], snap.cols - 1);
-        const ty = oy + QUAD_DY[piece.q];
+        const tx = Math.min(ox + pqx(piece.q, snap.gw), snap.cols - 1);
+        const ty = Math.min(oy + pqy(piece.q, snap.gw), snap.rows - 1);
         if (tx === piece.cx && ty === piece.cy) {
           bot.socket.emit('input', { t: 'dir', x: 0, y: 0 });
           continue;
@@ -168,7 +187,7 @@ async function main() {
       }
     }
   }, 200);
-  await sleep(7000);
+  await sleep(12000);
   await page.screenshot({ path: path.join(OUT_DIR, '3-team-puzzles.png') });
   clearInterval(solver);
   console.log('puzzle captured');
