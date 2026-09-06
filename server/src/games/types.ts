@@ -22,6 +22,8 @@ export interface GameCtx {
   emitStage(snapshot: StageSnapshot): void;
   emitMe(slot: number): void; // room re-sends 'me' built from game.personal()
   buzz(slot: number, type: BuzzType): void;
+  // game-specific event straight to one phone (e.g. Medusa 'field'/'shield')
+  send(slot: number, event: string, data: unknown): void;
 }
 
 export interface GameModule {
@@ -33,6 +35,7 @@ export interface GameModule {
   onJoin(slot: number): void;
   // game-specific fields merged into the player's MeState
   personal(slot: number): Partial<MeState>;
-  // AI move for a fake player; the room feeds the result back into input()
-  botInput(slot: number): InputPayload | null;
+  // AI move(s) for a fake player; the room feeds each result back into
+  // input(), so bots exercise the exact same code path phones do
+  botInput(slot: number): InputPayload | InputPayload[] | null;
 }

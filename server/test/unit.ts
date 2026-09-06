@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import type { StageSnapshot } from '../../shared/protocol';
 import { Medusa } from '../src/games/medusa';
+import { cellKey, generateField } from '../src/games/medusaField';
 import { TeamPuzzles } from '../src/games/teamPuzzles';
 import type { GameCtx } from '../src/games/types';
 
@@ -36,6 +37,7 @@ function makeGame(
     },
     emitMe: () => {},
     buzz: () => {},
+    send: () => {},
   };
   const game = new TeamPuzzles(ctx);
   const internals = game as any;
@@ -269,6 +271,7 @@ function makeMedusa(playerCount: number, medusaEyes = false) {
     emitStage: () => {},
     emitMe: () => {},
     buzz: (slot, type) => buzzes.push([slot, type]),
+    send: () => {},
   };
   const game = new Medusa(ctx);
   game.start();
@@ -278,20 +281,23 @@ function makeMedusa(playerCount: number, medusaEyes = false) {
   return { game, internals, buzzes };
 }
 
-// (a) Every generated field has a pit-free path from start to finish.
+// (a) Every generated field is traversable (independent BFS: pit cells pass
+// only on ferry-route lanes) and respects the layout invariants: crumble
+// never on the carved spine, never beside a pit or another crumble, and
+// every chasm band carries at least two ferries.
 {
+  const L = 24;
+  const lanes = 16;
+  const startCols = 2;
   for (let seed = 0; seed < 30; seed++) {
-    const { internals } = makeMedusa(40);
-    const L = 24;
-    const lanes = internals.lanes as number;
-    const pits = internals.pits as Set<number>;
+    const field = generateField(L, lanes, startCols);
+    const ferryLane = (c: number, l: number) =>
+      field.platforms.some((p) => p.lane === l && c >= p.c0 && c <= p.c1);
     const visited = new Set<number>();
     const queue: [number, number][] = [];
     for (let lane = 0; lane < lanes; lane++) {
-      if (!pits.has(lane * L)) {
-        queue.push([0, lane]);
-        visited.add(lane * L);
-      }
+      queue.push([0, lane]);
+      visited.add(cellKey(0, lane, L));
     }
     let reached = false;
     while (queue.length > 0 && !reached) {
@@ -304,25 +310,53 @@ function makeMedusa(playerCount: number, medusaEyes = false) {
         const nc = col + dc;
         const nl = lane + dl;
         if (nc < 0 || nc >= L || nl < 0 || nl >= lanes) continue;
-        const key = nl * L + nc;
-        if (visited.has(key) || pits.has(key)) continue;
+        const key = cellKey(nc, nl, L);
+        if (visited.has(key)) continue;
+        if (field.pits.has(key) && !ferryLane(nc, nl)) continue;
         visited.add(key);
         queue.push([nc, nl]);
       }
     }
-    assert.ok(reached, `seed ${seed}: no pit-free path to the finish`);
+    assert.ok(reached, `seed ${seed}: no traversable path to the finish`);
+
+    for (const k of field.crumble) {
+      assert.ok(!field.safe.has(k), `seed ${seed}: crumble on a carved safe path`);
+      assert.ok(!field.pits.has(k), `seed ${seed}: crumble on a pit`);
+      const c = k % L;
+      const l = Math.floor(k / L);
+      for (const [dc, dl] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nc = c + dc;
+        const nl = l + dl;
+        if (nc < 0 || nc >= L || nl < 0 || nl >= lanes) continue;
+        const nk = cellKey(nc, nl, L);
+        assert.ok(
+          !field.pits.has(nk) && !field.crumble.has(nk),
+          `seed ${seed}: crumble at (${c},${l}) touches a pit/crumble neighbor`,
+        );
+      }
+    }
+    assert.ok(field.chasms.length >= 1, `seed ${seed}: no chasm bands`);
+    for (const band of field.chasms) {
+      const ferries = field.platforms.filter((p) => p.c0 === band.c0 && p.c1 === band.c1);
+      assert.ok(ferries.length >= 2, `seed ${seed}: band needs >=2 ferries`);
+    }
   }
 }
-console.log('unit: medusa pit fields always solvable OK');
+console.log('unit: medusa fields always solvable (chasms, ferries, crumble) OK');
 
 // (b) Gaze fairness: turning safe, early red forgiven, late red petrifies;
-// (c) hop cooldown; (d) pit fall; (e) timeout petrifies stragglers.
+// (c) hop cooldown; (d) pits block instead of killing; (e) timeout petrifies
+// stragglers.
 {
   const { game, internals } = makeMedusa(4);
+  const clearCell = (col: number, lane: number) => {
+    internals.pits.delete(lane * 24 + col);
+    internals.crumbleStage.delete(lane * 24 + col);
+  };
   const runner = internals.runners.get(1);
   runner.col = 5;
   runner.lane = 3;
-  internals.pits.delete(3 * 24 + 6); // ensure forward cell isn't a pit
+  clearCell(6, 3); // ensure forward cell is open ground
   internals.t = 10;
 
   // turning is safe
@@ -339,7 +373,7 @@ console.log('unit: medusa pit fields always solvable OK');
   internals.t = 11;
   internals.gaze = 'red';
   internals.redSince = 11 - 0.2;
-  internals.pits.delete(3 * 24 + 7);
+  clearCell(7, 3);
   game.input(1, { t: 'hop', d: 'f' });
   assert.equal(runner.col, 7, 'hop 200ms into red is forgiven');
   assert.equal(runner.state, 0);
@@ -351,7 +385,7 @@ console.log('unit: medusa pit fields always solvable OK');
   assert.equal(runner.state, 1, 'hop 500ms into red petrifies');
   assert.equal(runner.col, 7, 'petrified where they stood — the hop never lands');
 
-  // pit fall
+  // pits BLOCK — nobody falls anywhere, the hop is just refused
   const r2 = internals.runners.get(2);
   r2.col = 5;
   r2.lane = 2;
@@ -359,13 +393,14 @@ console.log('unit: medusa pit fields always solvable OK');
   internals.t = 13;
   internals.gaze = 'green';
   game.input(2, { t: 'hop', d: 'f' });
-  assert.equal(r2.state, 3, 'hopping into a pit means falling in');
+  assert.equal(r2.col, 5, 'hop into a pit is refused — position unchanged');
+  assert.equal(r2.state, 0, 'nothing on the field is deadly');
 
   // finishing
   const r3 = internals.runners.get(3);
   r3.col = 22;
   r3.lane = 4;
-  internals.pits.delete(4 * 24 + 23);
+  clearCell(23, 4);
   internals.t = 14;
   game.input(3, { t: 'hop', d: 'f' });
   assert.equal(r3.state, 2, 'reaching the last column finishes');
@@ -379,7 +414,93 @@ console.log('unit: medusa pit fields always solvable OK');
   assert.equal(r4.state, 1, 'timeout petrifies stragglers');
   assert.equal(internals.phase, 'over');
 }
-console.log('unit: medusa gaze/cooldown/pits/timeout OK');
+console.log('unit: medusa gaze/cooldown/pit-block/timeout OK');
+
+// Ferry platforms: board only when aligned, ride across, step off; open
+// water refuses the hop.
+{
+  const { game, internals } = makeMedusa(2);
+  const key = (c: number, l: number) => l * 24 + c;
+  // Hand-built gorge at cols 8-10 on every lane, one ferry on lane 3.
+  internals.gaze = 'green';
+  internals.gazeUntil = 1e9;
+  for (let c = 8; c <= 10; c++) {
+    for (let l = 0; l < internals.lanes; l++) internals.pits.add(key(c, l));
+  }
+  internals.platforms = [{ id: 7, lane: 3, c0: 8, c1: 10, pos: 9, dir: 1 }];
+  internals.crumbleStage.clear();
+  internals.pits.delete(key(7, 3));
+  internals.pits.delete(key(11, 3));
+
+  const r = internals.runners.get(1);
+  r.col = 7;
+  r.lane = 3;
+  internals.t = 10;
+  game.input(1, { t: 'hop', d: 'f' });
+  assert.equal(r.col, 7, 'ferry mid-gorge: boarding hop refused');
+  assert.equal(r.ride, null);
+
+  internals.platforms[0].pos = 8.2; // docked within ALIGN_EPS of col 8
+  internals.t = 11;
+  game.input(1, { t: 'hop', d: 'f' });
+  assert.equal(r.col, 8, 'aligned ferry accepts the boarding hop');
+  assert.equal(r.ride, 7, 'boarding sets the ride');
+
+  // The ferry carries the rider (tick moves pos, rider follows round(pos)).
+  internals.platforms[0].pos = 8;
+  internals.platforms[0].dir = 1;
+  internals.t = 12;
+  // 26 ticks × 0.05s × 1.6 cells/s ≥ the 2-cell crossing (it clamps at c1).
+  for (let i = 0; i < 26; i++) internals.tick(1 / 20);
+  assert.equal(r.col, 10, 'rider carried to the far side of the gorge');
+  assert.equal(r.state, 0, 'riding is safe');
+
+  internals.t += 1;
+  game.input(1, { t: 'hop', d: 'f' });
+  assert.equal(r.col, 11, 'stepping off onto the far bank');
+  assert.equal(r.ride, null, 'dismount clears the ride');
+}
+console.log('unit: medusa ferry platforms OK');
+
+// Crumbling ground: cracks underfoot, collapses only after it's vacated,
+// then blocks like any pit.
+{
+  const { game, internals } = makeMedusa(2);
+  const k = 5 * 24 + 10; // cell (10, 5)
+  internals.gaze = 'green';
+  internals.gazeUntil = 1e9;
+  internals.pits.delete(k);
+  internals.pits.delete(5 * 24 + 11);
+  internals.crumbleStage.clear();
+  internals.crumbleStage.set(k, 0);
+
+  const r = internals.runners.get(1);
+  r.col = 9;
+  r.lane = 5;
+  internals.pits.delete(5 * 24 + 9);
+  internals.t = 10;
+  game.input(1, { t: 'hop', d: 'f' });
+  assert.equal(r.col, 10, 'intact crumble is walkable');
+  assert.equal(internals.crumbleStage.get(k), 1, 'stepping on it cracks it');
+
+  // Standing on the cracked cell forever: it must never collapse underfoot.
+  internals.t = 11;
+  for (let i = 0; i < 30; i++) internals.tick(1 / 20);
+  assert.equal(internals.crumbleStage.get(k), 1, 'never collapses while occupied');
+  assert.equal(r.state, 0);
+
+  // Leave — it caves in shortly after.
+  game.input(1, { t: 'hop', d: 'f' });
+  assert.equal(r.col, 11);
+  for (let i = 0; i < 20; i++) internals.tick(1 / 20); // 1s > 0.6s delay
+  assert.equal(internals.crumbleStage.get(k), 2, 'collapses after being vacated');
+
+  // Collapsed ground now blocks.
+  internals.t += 1;
+  game.input(1, { t: 'hop', d: 'b' });
+  assert.equal(r.col, 11, 'hop onto collapsed ground refused');
+}
+console.log('unit: medusa crumbling ground OK');
 
 // Eye mode: looking during red petrifies (even standing still); eyes-closed
 // players may keep moving; stale/no camera silently means classic rules.
@@ -414,6 +535,7 @@ console.log('unit: medusa gaze/cooldown/pits/timeout OK');
   r2.col = 5;
   r2.lane = 3;
   internals.pits.delete(3 * 24 + 6);
+  internals.crumbleStage.delete(3 * 24 + 6);
   hold(12);
   internals.redSince = 12 - 2;
   game.input(2, { t: 'eyes', open: false, seen: true });

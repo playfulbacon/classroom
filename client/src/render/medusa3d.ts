@@ -19,7 +19,6 @@ const TURN_TIME = 0.8;
 const ST_RUN = 0;
 const ST_STONE = 1;
 const ST_FINISHED = 2;
-const ST_FALLEN = 3;
 
 interface Avatar {
   group: THREE.Group;
@@ -32,13 +31,21 @@ interface Avatar {
   tx: number;
   tz: number;
   hopStart: number; // seconds, -1 when idle
+  glide: boolean; // riding a ferry — slide instead of hopping
   fromX: number;
   fromZ: number;
   state: number;
   stoneAt: number;
-  fallAt: number;
   bobPhase: number;
   pingUntil: number;
+}
+
+interface CrumbleCell {
+  tile: THREE.Mesh;
+  tileMat: THREE.MeshLambertMaterial;
+  cracks: THREE.LineSegments;
+  hole: THREE.Mesh;
+  stage: number;
 }
 
 interface OneShot {
@@ -90,6 +97,10 @@ export function createMedusaRenderer(
   let built = false;
   const avatars = new Map<number, Avatar>();
   const oneShots: OneShot[] = [];
+  const platformMeshes = new Map<number, THREE.Mesh>();
+  const platformTargets = new Map<number, number>(); // id → latest pos (col)
+  const crumbleCells = new Map<number, CrumbleCell>(); // lane*1000+col
+  let pitKeys = new Set<number>(); // lane*1000+col — for ferry-glide detection
   let headGroup: THREE.Group | null = null;
   let headSpin: THREE.Group | null = null; // rotates for gaze
   let eyeMats: THREE.MeshLambertMaterial[] = [];
@@ -149,6 +160,10 @@ export function createMedusaRenderer(
     addLights();
     avatars.clear();
     oneShots.length = 0;
+    platformMeshes.clear();
+    platformTargets.clear();
+    crumbleCells.clear();
+    pitKeys = new Set();
     headGroup = null;
     headSpin = null;
     redLight = null;
@@ -213,10 +228,39 @@ export function createMedusaRenderer(
     finish.position.set(L - 1, 0.002, cz);
     scene.add(finish);
 
-    // Pits: dark recessed squares with a rim.
+    // Chasm bands (from the ferry routes): one deep gorge slab each instead
+    // of per-cell pit squares.
+    const bands: { c0: number; c1: number }[] = [];
+    for (const [, , c0, c1] of s.platforms) {
+      if (!bands.some((b) => b.c0 === c0 && b.c1 === c1)) bands.push({ c0, c1 });
+    }
+    const inBand = (col: number) => bands.some((b) => col >= b.c0 && col <= b.c1);
+    for (const b of bands) {
+      const width = b.c1 - b.c0 + 1;
+      const gorge = new THREE.Mesh(
+        new THREE.PlaneGeometry(width - 0.1, lanes + 2),
+        new THREE.MeshLambertMaterial({ color: 0x070a16 }),
+      );
+      gorge.rotation.x = -Math.PI / 2;
+      gorge.position.set((b.c0 + b.c1) / 2, 0.005, cz);
+      scene.add(gorge);
+      for (const edge of [b.c0 - 0.5, b.c1 + 0.5]) {
+        const rim = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.12, lanes + 2),
+          new THREE.MeshLambertMaterial({ color: 0x2a3550 }),
+        );
+        rim.rotation.x = -Math.PI / 2;
+        rim.position.set(edge, 0.007, cz);
+        scene.add(rim);
+      }
+    }
+
+    // Scattered pits: dark recessed squares with a rim.
+    pitKeys = new Set(s.pits.map(([c, l]) => l * 1000 + c));
     const pitTop = new THREE.MeshLambertMaterial({ color: 0x05060d });
     const pitRim = new THREE.MeshLambertMaterial({ color: 0x1b2438 });
     for (const [col, lane] of s.pits) {
+      if (inBand(col)) continue;
       const rim = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 0.95), pitRim);
       rim.rotation.x = -Math.PI / 2;
       rim.position.set(col, 0.004, lane);
@@ -227,7 +271,64 @@ export function createMedusaRenderer(
       scene.add(hole);
     }
 
+    // Ferry platforms: bronze slabs shuttling across the gorges.
+    for (const [id, lane, , , pos] of s.platforms) {
+      const slab = new THREE.Mesh(
+        new THREE.BoxGeometry(0.92, 0.14, 0.92),
+        new THREE.MeshLambertMaterial({ color: 0xa8763e }),
+      );
+      slab.position.set(pos, 0.09, lane);
+      scene.add(slab);
+      platformMeshes.set(id, slab);
+      platformTargets.set(id, pos);
+    }
+
+    // Crumbling ground: dry cracked tiles that collapse behind the crowd.
+    for (const [col, lane, stage] of s.crumble) {
+      const tileMat = new THREE.MeshLambertMaterial({ color: 0x77704f });
+      const tile = new THREE.Mesh(new THREE.PlaneGeometry(0.94, 0.94), tileMat);
+      tile.rotation.x = -Math.PI / 2;
+      tile.position.set(col, 0.005, lane);
+      scene.add(tile);
+      const crackGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(col - 0.3, 0.012, lane - 0.35),
+        new THREE.Vector3(col + 0.1, 0.012, lane + 0.05),
+        new THREE.Vector3(col + 0.1, 0.012, lane + 0.05),
+        new THREE.Vector3(col + 0.32, 0.012, lane + 0.3),
+        new THREE.Vector3(col - 0.35, 0.012, lane + 0.25),
+        new THREE.Vector3(col + 0.05, 0.012, lane - 0.1),
+      ]);
+      const cracks = new THREE.LineSegments(
+        crackGeo,
+        new THREE.LineBasicMaterial({ color: 0x2b2517, transparent: true, opacity: 0.5 }),
+      );
+      scene.add(cracks);
+      const hole = new THREE.Mesh(new THREE.PlaneGeometry(0.86, 0.86), pitTop);
+      hole.rotation.x = -Math.PI / 2;
+      hole.position.set(col, 0.008, lane);
+      hole.visible = false;
+      scene.add(hole);
+      const cell: CrumbleCell = { tile, tileMat, cracks, hole, stage: 0 };
+      crumbleCells.set(lane * 1000 + col, cell);
+      if (stage !== 0) styleCrumble(cell, stage, false);
+    }
+
     buildMedusaHead(L, cz);
+  }
+
+  // Restyle a crumble cell for its stage; `fx` fires the collapse dust.
+  function styleCrumble(cell: CrumbleCell, stage: number, fx: boolean) {
+    cell.stage = stage;
+    if (stage === 1) {
+      cell.tileMat.color.set(0x5c5138);
+      (cell.cracks.material as THREE.LineBasicMaterial).opacity = 0.95;
+      cell.tile.rotation.z = 0.02;
+    } else if (stage === 2) {
+      cell.tile.visible = false;
+      cell.cracks.visible = false;
+      cell.hole.visible = true;
+      if (fx) spawnDust(cell.hole.position.x, cell.hole.position.z);
+    }
   }
 
   // ------------------------------------------------------------- Medusa
@@ -375,11 +476,11 @@ export function createMedusaRenderer(
       tx: 0,
       tz: 0,
       hopStart: -1,
+      glide: false,
       fromX: 0,
       fromZ: 0,
       state: ST_RUN,
       stoneAt: 0,
-      fallAt: 0,
       bobPhase: (slot % 17) * 0.4,
       pingUntil: 0,
     };
@@ -508,16 +609,14 @@ export function createMedusaRenderer(
         av.tx = tx;
         av.tz = tz;
         av.hopStart = clockT;
+        // On a pit cell = riding a ferry: slide with it instead of hopping.
+        av.glide = pitKeys.has(lane * 1000 + col) && state !== ST_FINISHED;
       }
       if (state !== av.state) {
         if (state === ST_STONE) {
           av.stoneAt = clockT;
           turnToStone(av);
           sfx.crack();
-        } else if (state === ST_FALLEN) {
-          av.fallAt = clockT;
-          sfx.fall();
-          spawnDust(av.x, av.z);
         }
         av.state = state;
       }
@@ -530,6 +629,12 @@ export function createMedusaRenderer(
         av.pingUntil = clockT + 2;
         spawnRing(av.x, av.z, av.color);
       }
+    }
+
+    for (const [id, , , , pos] of s.platforms) platformTargets.set(id, pos);
+    for (const [col, lane, stage] of s.crumble) {
+      const cell = crumbleCells.get(lane * 1000 + col);
+      if (cell && stage > cell.stage) styleCrumble(cell, stage, stage === 2);
     }
 
     snap = s;
@@ -559,6 +664,7 @@ export function createMedusaRenderer(
     }
 
     updateAvatars(dt);
+    updatePlatforms(dt);
     updateHead(dt);
     updateOneShots();
     updateCamera(s, w / h, dt);
@@ -569,8 +675,16 @@ export function createMedusaRenderer(
 
   function updateAvatars(dt: number) {
     for (const av of avatars.values()) {
-      // Hop interpolation.
-      if (av.hopStart >= 0) {
+      if (av.hopStart >= 0 && av.glide) {
+        // Ferry ride: ease toward the target with no arc.
+        const k = 1 - Math.exp(-10 * dt);
+        av.x += (av.tx - av.x) * k;
+        av.z += (av.tz - av.z) * k;
+        av.group.position.set(av.x, 0.14, av.z);
+        av.group.scale.set(1, 1, 1);
+        if (Math.abs(av.tx - av.x) + Math.abs(av.tz - av.z) < 0.01) av.hopStart = -1;
+      } else if (av.hopStart >= 0) {
+        // Hop interpolation.
         const p = Math.min(1, (clockT - av.hopStart) / HOP_DUR);
         av.x = av.fromX + (av.tx - av.fromX) * p;
         av.z = av.fromZ + (av.tz - av.fromZ) * p;
@@ -581,7 +695,7 @@ export function createMedusaRenderer(
         av.group.scale.set(1 / squash, squash, 1 / squash);
         if (p >= 1) av.hopStart = -1;
       } else {
-        av.group.position.set(av.x, 0, av.z);
+        av.group.position.set(av.x, av.glide ? 0.14 : 0, av.z);
         av.group.scale.set(1, 1, 1);
       }
 
@@ -597,12 +711,15 @@ export function createMedusaRenderer(
         } else {
           av.group.rotation.z = 0;
         }
-      } else if (av.state === ST_FALLEN) {
-        const p = Math.min(1, (clockT - av.fallAt) / 0.45);
-        av.group.position.y = -1.4 * p * p;
-        av.group.rotation.x = p * 1.2;
-        av.group.visible = p < 1;
       }
+    }
+  }
+
+  function updatePlatforms(dt: number) {
+    const k = 1 - Math.exp(-10 * dt);
+    for (const [id, mesh] of platformMeshes) {
+      const target = platformTargets.get(id);
+      if (target !== undefined) mesh.position.x += (target - mesh.position.x) * k;
     }
   }
 
@@ -648,7 +765,6 @@ export function createMedusaRenderer(
     let minZ = Infinity;
     let maxZ = -Infinity;
     for (const av of avatars.values()) {
-      if (av.state === ST_FALLEN) continue;
       minX = Math.min(minX, av.x);
       maxX = Math.max(maxX, av.x);
       minZ = Math.min(minZ, av.z);
@@ -740,7 +856,6 @@ export function createMedusaRenderer(
     ctx.textBaseline = 'bottom';
     for (const [slot] of avatars) {
       const av = avatars.get(slot)!;
-      if (av.state === ST_FALLEN) continue;
       proj.set(av.x, 1.15 + av.group.position.y, av.z).project(camera);
       if (proj.z > 1) continue;
       const px = ((proj.x + 1) / 2) * w;
@@ -786,12 +901,11 @@ export function createMedusaRenderer(
 
     // Tallies.
     const stones = s.players.filter((p) => p[3] === ST_STONE).length;
-    const fell = s.players.filter((p) => p[3] === ST_FALLEN).length;
     ctx.textAlign = 'right';
     ctx.font = `700 ${Math.round(h * 0.03)}px system-ui`;
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.fillText(
-      `🏃 ${s.aliveCount}   🏁 ${s.finished.length}   🗿 ${stones}   🕳 ${fell}`,
+      `🏃 ${s.aliveCount}   🏁 ${s.finished.length}   🗿 ${stones}`,
       w - h * 0.03,
       h * 0.03,
     );
@@ -860,11 +974,10 @@ export function createMedusaRenderer(
         );
       });
       const stones2 = s.players.filter((p) => p[3] === ST_STONE).length;
-      const fell2 = s.players.filter((p) => p[3] === ST_FALLEN).length;
       ctx.font = `700 ${Math.round(h * 0.032)}px system-ui`;
       ctx.fillStyle = '#b9c0e0';
       ctx.fillText(
-        `${s.finished.length} escaped · ${stones2} statues · ${fell2} in the pits`,
+        `${s.finished.length} escaped · ${stones2} statues`,
         w / 2,
         h / 2 + ph * 0.4,
       );
@@ -880,6 +993,9 @@ export function createMedusaRenderer(
     camera = null;
     avatars.clear();
     oneShots.length = 0;
+    platformMeshes.clear();
+    platformTargets.clear();
+    crumbleCells.clear();
     built = false;
   }
 

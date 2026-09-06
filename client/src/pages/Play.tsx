@@ -571,16 +571,6 @@ export function Play() {
         </div>
       );
     }
-    if (st === 'fallen') {
-      return (
-        <div className="status-screen" style={{ background: '#241a12' }}>
-          {reconnectBanner}
-          <div className="big-num">{num}</div>
-          <h2>🕳 You fell in a pit!</h2>
-          <div className="sub">Watch the big screen — better luck next round.</div>
-        </div>
-      );
-    }
     if (st === 'finished') {
       return (
         <div className="status-screen" style={{ background: '#245c36' }}>

@@ -117,11 +117,11 @@ export interface PuzzleSnapshot {
 
 export type MedusaGazeState = 'green' | 'turning' | 'red' | 'returning';
 
-// Player states in the snapshot tuple
+// Player states in the snapshot tuple. Petrification is the only elimination:
+// pits, chasms and collapsed ground BLOCK movement, they never swallow anyone.
 export const MEDUSA_RUNNING = 0;
 export const MEDUSA_STONE = 1;
 export const MEDUSA_FINISHED = 2;
-export const MEDUSA_FALLEN = 3;
 
 // Eye flag in the player tuple
 export const MEDUSA_EYES_CLASSIC = -1; // no camera / stale — freeze rules
@@ -133,6 +133,15 @@ export const MEDUSA_EYES_CLOSED = 1;
 // screen; eyes = MEDUSA_EYES_* (always CLASSIC when eye mode is off).
 export type MedusaPlayerTuple = [number, number, number, number, number];
 
+// A ferry platform shuttling across a chasm band: [id, lane, c0, c1, pos].
+// It occupies cell (round(pos), lane) and bounces between columns c0 and c1;
+// runners hop on when it's aligned with an edge cell and ride it across.
+export type MedusaPlatformTuple = [number, number, number, number, number];
+
+// Crumbling ground: [col, lane, stage] — 0 intact (hairline cracks), 1 cracked
+// (someone stepped on it), 2 gone (collapsed into a blocking pit).
+export type MedusaCrumbleTuple = [number, number, 0 | 1 | 2];
+
 export interface MedusaSnapshot {
   kind: 'medusa';
   phase: GamePhase;
@@ -141,7 +150,9 @@ export interface MedusaSnapshot {
   timeLimit: number;
   length: number; // columns along the race axis
   lanes: number;
-  pits: [number, number][]; // [col, lane]
+  pits: [number, number][]; // [col, lane] — includes chasm band cells
+  platforms: MedusaPlatformTuple[];
+  crumble: MedusaCrumbleTuple[];
   gaze: {
     state: MedusaGazeState;
     tLeft: number; // seconds remaining in this gaze state
@@ -151,6 +162,17 @@ export interface MedusaSnapshot {
   pings: number[];
   finished: number[]; // slots in finishing order
   aliveCount: number;
+}
+
+// Static field layout pushed once to each phone at round start / rejoin
+// ('field' event) so the phone can render its shield view without ever
+// receiving stage snapshots.
+export interface MedusaFieldMsg {
+  length: number;
+  lanes: number;
+  pits: [number, number][]; // includes chasm band cells
+  crumble: [number, number][]; // crumble cell locations (all start intact)
+  platforms: { id: number; lane: number; c0: number; c1: number }[];
 }
 
 export type StageSnapshot = LosSnapshot | PuzzleSnapshot | MedusaSnapshot;
@@ -178,7 +200,7 @@ export interface MeState {
   rotationEnabled?: boolean;
   teamRank?: number; // 1-based finish position once the team locks
   // Medusa
-  medusaState?: 'running' | 'stone' | 'finished' | 'fallen';
+  medusaState?: 'running' | 'stone' | 'finished';
   col?: number; // current progress column
   fieldLength?: number;
   eyeMode?: boolean; // room has eye mode on — the phone should arm its camera
@@ -233,6 +255,7 @@ export interface HostStartRequest {
 //  'snapshot' StageSnapshot    — stage screens only
 //  'me'       MeState          — one phone
 //  'buzz'     BuzzType         — one phone (vibration cue)
+//  'field'    MedusaFieldMsg   — one phone, once per Medusa round (static layout)
 // Client → server:
 //  'stage:create' (cb: {code, room})
 //  'stage:attach' ({code}, cb: StageAttachResponse)

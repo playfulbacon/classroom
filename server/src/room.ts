@@ -250,6 +250,10 @@ export class Room {
         const player = this.bySlot.get(slot);
         if (player?.socketId) this.io.to(player.socketId).emit('buzz', type);
       },
+      send: (slot: number, event: string, data: unknown) => {
+        const player = this.bySlot.get(slot);
+        if (player?.socketId) this.io.to(player.socketId).emit(event, data);
+      },
     };
   }
 
@@ -306,8 +310,11 @@ export class Room {
       if (!game) return;
       for (const p of this.bySlot.values()) {
         if (!p.isBot) continue;
-        const payload = game.botInput(p.slot);
-        if (payload) game.input(p.slot, payload);
+        const result = game.botInput(p.slot);
+        if (!result) continue;
+        for (const payload of Array.isArray(result) ? result : [result]) {
+          game.input(p.slot, payload);
+        }
       }
     }, 180);
   }

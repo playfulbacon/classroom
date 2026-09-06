@@ -1,16 +1,19 @@
 import {
-  MEDUSA_FALLEN,
   MEDUSA_FINISHED,
   MEDUSA_RUNNING,
   MEDUSA_STONE,
   type GamePhase,
   type InputPayload,
+  type MedusaCrumbleTuple,
+  type MedusaFieldMsg,
   type MedusaGazeState,
+  type MedusaPlatformTuple,
   type MedusaPlayerTuple,
   type MedusaSnapshot,
   type MeState,
 } from '../../../shared/protocol';
 import type { GameCtx, GameModule } from './types';
+import { generateField, type MedusaField } from './medusaField';
 
 const TICK_MS = 1000 / 20;
 const COUNTDOWN = 3;
@@ -22,12 +25,14 @@ const EYES_FRESH = 1.5; // seconds before eye reports go stale → classic rules
 const HOP_COOLDOWN = 0.18; // bounds tap-mash speed
 const PING_COOLDOWN = 2;
 const TURN_TIME = 0.8; // turning / returning duration (the audible warning)
+const PLATFORM_SPEED = 1.6; // cells/s a ferry shuttles across its chasm
+const ALIGN_EPS = 0.35; // |pos - col| within which a ferry is boardable
+const CRUMBLE_COLLAPSE_DELAY = 0.6; // s after a cracked cell is vacated
 
 type PlayerState =
   | typeof MEDUSA_RUNNING
   | typeof MEDUSA_STONE
-  | typeof MEDUSA_FINISHED
-  | typeof MEDUSA_FALLEN;
+  | typeof MEDUSA_FINISHED;
 
 interface Runner {
   slot: number;
@@ -36,10 +41,20 @@ interface Runner {
   state: PlayerState;
   lastHopAt: number;
   lastPingAt: number;
+  ride: number | null; // platform id being ridden across a chasm
   // Eye mode (camera): latest on-device report from this player's phone.
   eyesOpen: boolean;
   faceSeen: boolean;
   eyesAt: number; // t of the latest report; -Infinity = never reported
+}
+
+interface Platform {
+  id: number;
+  lane: number;
+  c0: number;
+  c1: number;
+  pos: number; // continuous column position within [c0, c1]
+  dir: 1 | -1;
 }
 
 interface BotBrain {
@@ -55,7 +70,11 @@ export class Medusa implements GameModule {
   private readonly brains = new Map<number, BotBrain>();
   private lanes = 20;
   private startCols = 2;
-  private pits = new Set<number>(); // lane * LENGTH + col
+  private pits = new Set<number>(); // lane * LENGTH + col (incl. chasm bands)
+  private field: MedusaField | null = null;
+  private platforms: Platform[] = [];
+  private crumbleStage = new Map<number, 0 | 1 | 2>(); // every crumble cell
+  private crumbleVacatedAt = new Map<number, number>(); // cracked → empty since t
   private phase: GamePhase = 'countdown';
   private countdown = COUNTDOWN;
   private t = 0;
@@ -83,7 +102,17 @@ export class Medusa implements GameModule {
     // never gets absurdly deep for small groups.
     this.lanes = Math.min(24, Math.max(12, Math.ceil(slots.length / 4) * 2));
     this.startCols = Math.max(2, Math.ceil(slots.length / this.lanes / 2));
-    this.generatePits();
+    this.field = generateField(LENGTH, this.lanes, this.startCols);
+    this.pits = this.field.pits;
+    for (const k of this.field.crumble) this.crumbleStage.set(k, 0);
+    this.platforms = this.field.platforms.map((p) => ({
+      id: p.id,
+      lane: p.lane,
+      c0: p.c0,
+      c1: p.c1,
+      pos: p.c0 + p.phase * (p.c1 - p.c0),
+      dir: Math.random() < 0.5 ? 1 : -1,
+    }));
     // Seating-chart start: numbers run in order down the first start column,
     // then the next, so students find themselves like finding a seat.
     slots.forEach((slot, i) => {
@@ -94,13 +123,35 @@ export class Medusa implements GameModule {
         state: MEDUSA_RUNNING,
         lastHopAt: -1,
         lastPingAt: -PING_COOLDOWN,
+        ride: null,
         eyesOpen: true,
         faceSeen: false,
         eyesAt: -Infinity,
       });
+      if (!this.ctx.isBot(slot)) this.sendField(slot);
     });
     this.scheduleGaze('green', this.greenDuration());
     this.interval = setInterval(() => this.tick(TICK_MS / 1000), TICK_MS);
+  }
+
+  // Static layout for the phone's shield view — sent once, never streamed.
+  private sendField(slot: number) {
+    const msg: MedusaFieldMsg = {
+      length: LENGTH,
+      lanes: this.lanes,
+      pits: [...this.pits].map((k) => [k % LENGTH, Math.floor(k / LENGTH)]),
+      crumble: [...this.crumbleStage.keys()].map((k) => [
+        k % LENGTH,
+        Math.floor(k / LENGTH),
+      ]),
+      platforms: this.platforms.map((p) => ({
+        id: p.id,
+        lane: p.lane,
+        c0: p.c0,
+        c1: p.c1,
+      })),
+    };
+    this.ctx.send(slot, 'field', msg);
   }
 
   dispose() {
@@ -108,37 +159,29 @@ export class Medusa implements GameModule {
     this.interval = null;
   }
 
-  // ~15% pits, none on 3-4 carved monotone safe paths, capped per column so
-  // no column becomes a wall; the start zone and the last two columns stay
-  // clear.
-  private generatePits() {
-    const safe = new Set<number>();
-    const paths = 3 + Math.floor(Math.random() * 2);
-    for (let p = 0; p < paths; p++) {
-      let lane = Math.floor(Math.random() * this.lanes);
-      for (let col = 0; col < LENGTH; col++) {
-        safe.add(this.pitKey(col, lane));
-        lane = Math.min(
-          this.lanes - 1,
-          Math.max(0, lane + (Math.floor(Math.random() * 3) - 1)),
-        );
-        safe.add(this.pitKey(Math.min(col + 1, LENGTH - 1), lane));
+  // A ferry the runner could board/stand on at this cell right now.
+  private platformAt(col: number, lane: number): Platform | null {
+    for (const p of this.platforms) {
+      if (p.lane === lane && col >= p.c0 && col <= p.c1 && Math.abs(p.pos - col) <= ALIGN_EPS) {
+        return p;
       }
     }
-    this.pits = new Set();
-    const firstPitCol = this.startCols + 1;
-    for (let col = firstPitCol; col <= LENGTH - 3; col++) {
-      let inCol = 0;
-      const cap = Math.floor(this.lanes * 0.35);
-      for (let lane = 0; lane < this.lanes; lane++) {
-        if (inCol >= cap) break;
-        if (safe.has(this.pitKey(col, lane))) continue;
-        if (Math.random() < 0.18) {
-          this.pits.add(this.pitKey(col, lane));
-          inCol++;
-        }
-      }
-    }
+    return null;
+  }
+
+  // Is (col, lane) somewhere a ferry ever passes (regardless of timing)?
+  private onFerryRoute(col: number, lane: number): boolean {
+    return this.platforms.some((p) => p.lane === lane && col >= p.c0 && col <= p.c1);
+  }
+
+  // Nothing on this field is deadly: pits, chasms and collapsed crumble
+  // simply refuse the hop. A pit cell is passable only via an aligned ferry.
+  private passable(col: number, lane: number): boolean {
+    if (col < 0 || col >= LENGTH || lane < 0 || lane >= this.lanes) return false;
+    const k = this.pitKey(col, lane);
+    if (this.crumbleStage.get(k) === 2) return false;
+    if (this.pits.has(k)) return this.platformAt(col, lane) !== null;
+    return true;
   }
 
   private greenDuration(): number {
@@ -162,10 +205,12 @@ export class Medusa implements GameModule {
       state: MEDUSA_RUNNING,
       lastHopAt: -1,
       lastPingAt: -PING_COOLDOWN,
+      ride: null,
       eyesOpen: true,
       faceSeen: false,
       eyesAt: -Infinity,
     });
+    if (!this.ctx.isBot(slot)) this.sendField(slot);
   }
 
   // Eye rules apply only while this runner's phone streams fresh face data;
@@ -223,26 +268,28 @@ export class Medusa implements GameModule {
     else if (payload.d === 'l') lane -= 1;
     else if (payload.d === 'r') lane += 1;
     else return;
-    col = Math.max(0, Math.min(LENGTH - 1, col));
-    lane = Math.max(0, Math.min(this.lanes - 1, lane));
     if (col === runner.col && lane === runner.lane) return;
+    // Blocked hops (bounds, pits, chasm water, collapsed ground, a ferry
+    // that isn't there) are refused on the spot — nothing swallows anyone.
+    if (!this.passable(col, lane)) return;
     runner.col = col;
     runner.lane = lane;
-
-    if (this.pits.has(this.pitKey(col, lane))) {
-      runner.state = MEDUSA_FALLEN;
-      this.ctx.buzz(slot, 'eliminated');
-      this.ctx.emitMe(slot);
-      this.checkEnd();
-      return;
+    const key = this.pitKey(col, lane);
+    runner.ride = this.pits.has(key) ? this.platformAt(col, lane)!.id : null;
+    if (this.crumbleStage.get(key) === 0) {
+      this.crumbleStage.set(key, 1);
+      this.crumbleVacatedAt.delete(key);
     }
+
     if (col === LENGTH - 1) {
       runner.state = MEDUSA_FINISHED;
       this.finished.push(slot);
       this.ctx.buzz(slot, 'locked');
       this.ctx.emitMe(slot);
       this.checkEnd();
+      return;
     }
+    if (!this.ctx.isBot(slot)) this.ctx.emitMe(slot); // phone progress bar
   }
 
   private buzzRunners(type: 'go' | 'bumped') {
@@ -297,13 +344,24 @@ export class Medusa implements GameModule {
         Math.random() < brain.risk * 0.5;
       if (!sneak) return null;
     }
+    // Mid-ferry: wait for the far bank, then step off. (The ferry does the
+    // work; hopping into open water is refused anyway.)
+    if (runner.ride !== null) {
+      return this.passable(runner.col + 1, runner.lane) ? { t: 'hop', d: 'f' } : null;
+    }
     if (Math.random() > brain.eagerness) return null;
-    // BFS to the finish around pits — greedy dodging can trap a runner in a
-    // pit pocket forever; the generated fields are always solvable.
-    return { t: 'hop', d: this.pathStep(runner.col, runner.lane) };
+    // BFS to the finish around obstacles — greedy dodging can trap a runner
+    // in a pit pocket forever; the generated fields are always solvable.
+    const d = this.pathStep(runner.col, runner.lane);
+    return d ? { t: 'hop', d } : null;
   }
 
-  private pathStep(fromCol: number, fromLane: number): 'f' | 'l' | 'r' | 'b' {
+  // First BFS step toward the finish. Blocked cells: pits/chasms off ferry
+  // routes, and every crumble cell (bots stick to ground that can't vanish —
+  // the carved spine guarantees they never need it). A step onto a ferry
+  // route is taken only when the ferry is actually there; otherwise the bot
+  // waits at the bank (returns null).
+  private pathStep(fromCol: number, fromLane: number): 'f' | 'l' | 'r' | 'b' | null {
     const key = (c: number, l: number) => l * LENGTH + c;
     const start = key(fromCol, fromLane);
     const prev = new Map<number, number>();
@@ -321,8 +379,12 @@ export class Medusa implements GameModule {
           if (p === -1) return 'f'; // already at the finish column
           cur = p;
         }
-        const dc = (cur % LENGTH) - fromCol;
-        const dl = Math.floor(cur / LENGTH) - fromLane;
+        const sc = cur % LENGTH;
+        const sl = Math.floor(cur / LENGTH);
+        // Board a ferry only when it's docked at that cell right now.
+        if (this.pits.has(cur) && !this.platformAt(sc, sl)) return null;
+        const dc = sc - fromCol;
+        const dl = sl - fromLane;
         if (dc === 1) return 'f';
         if (dc === -1) return 'b';
         return dl === -1 ? 'l' : 'r';
@@ -332,18 +394,19 @@ export class Medusa implements GameModule {
         const nl = l + dl;
         if (nc < 0 || nc >= LENGTH || nl < 0 || nl >= this.lanes) continue;
         const nk = key(nc, nl);
-        if (prev.has(nk) || this.pits.has(nk)) continue;
+        if (prev.has(nk) || this.crumbleStage.has(nk)) continue;
+        if (this.pits.has(nk) && !this.onFerryRoute(nc, nl)) continue;
         prev.set(nk, cell);
         queue.push(nk);
       }
     }
-    return 'f'; // fully walled (cannot happen on generated fields)
+    return null; // walled in (cannot happen on generated fields)
   }
 
   personal(slot: number): Partial<MeState> {
     const runner = this.runners.get(slot);
     if (!runner) return { waiting: true };
-    const states = ['running', 'stone', 'finished', 'fallen'] as const;
+    const states = ['running', 'stone', 'finished'] as const;
     const me: Partial<MeState> = {
       medusaState: states[runner.state],
       col: runner.col,
@@ -390,6 +453,44 @@ export class Medusa implements GameModule {
       }
     }
 
+    // Ferries shuttle their chasms; riders (statues included — a petrified
+    // passenger keeps ferrying, that's the show) are carried along.
+    for (const p of this.platforms) {
+      p.pos += p.dir * PLATFORM_SPEED * dt;
+      if (p.pos >= p.c1) {
+        p.pos = p.c1;
+        p.dir = -1;
+      } else if (p.pos <= p.c0) {
+        p.pos = p.c0;
+        p.dir = 1;
+      }
+    }
+    for (const r of this.runners.values()) {
+      if (r.ride === null || r.state === MEDUSA_FINISHED) continue;
+      const p = this.platforms.find((pf) => pf.id === r.ride);
+      if (p) r.col = Math.round(p.pos);
+    }
+
+    // Cracked ground collapses shortly after the last foot leaves it — never
+    // under someone standing on it.
+    if (this.crumbleStage.size > 0) {
+      const occupied = new Set<number>();
+      for (const r of this.runners.values()) {
+        if (r.state !== MEDUSA_FINISHED) occupied.add(this.pitKey(r.col, r.lane));
+      }
+      for (const [k, stage] of this.crumbleStage) {
+        if (stage !== 1) continue;
+        if (occupied.has(k)) {
+          this.crumbleVacatedAt.delete(k);
+        } else if (!this.crumbleVacatedAt.has(k)) {
+          this.crumbleVacatedAt.set(k, this.t);
+        } else if (this.t - this.crumbleVacatedAt.get(k)! >= CRUMBLE_COLLAPSE_DELAY) {
+          this.crumbleStage.set(k, 2);
+          this.crumbleVacatedAt.delete(k);
+        }
+      }
+    }
+
     // Eye mode: during red, open eyes petrify — even standing still.
     if (this.gaze === 'red' && this.t - this.redSince > EYES_GRACE) {
       for (const r of this.runners.values()) {
@@ -431,6 +532,12 @@ export class Medusa implements GameModule {
       length: LENGTH,
       lanes: this.lanes,
       pits: [...this.pits].map((k) => [k % LENGTH, Math.floor(k / LENGTH)]),
+      platforms: this.platforms.map(
+        (p): MedusaPlatformTuple => [p.id, p.lane, p.c0, p.c1, round2(p.pos)],
+      ),
+      crumble: [...this.crumbleStage].map(
+        ([k, stage]): MedusaCrumbleTuple => [k % LENGTH, Math.floor(k / LENGTH), stage],
+      ),
       gaze: { state: this.gaze, tLeft: round1(Math.max(0, this.gazeUntil - this.t)) },
       players,
       pings: this.pings,
@@ -445,4 +552,8 @@ export class Medusa implements GameModule {
 
 function round1(v: number): number {
   return Math.round(v * 10) / 10;
+}
+
+function round2(v: number): number {
+  return Math.round(v * 100) / 100;
 }

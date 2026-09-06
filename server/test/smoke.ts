@@ -474,13 +474,30 @@ async function main() {
     latestSnapshot?.kind === 'medusa' && latestSnapshot.phase === 'play' ? true : null,
   );
   const med0 = latestSnapshot as unknown as MedusaSnapshot;
-  console.log(`medusa: field ${med0.length}x${med0.lanes} with ${med0.pits.length} pits`);
+  console.log(
+    `medusa: field ${med0.length}x${med0.lanes} — ${med0.pits.length} pit cells, ` +
+      `${med0.platforms.length} ferries, ${med0.crumble.length} crumble cells`,
+  );
+  if (med0.platforms.length < 2) fail('expected ferry platforms on the field');
   const pitSet = new Set(med0.pits.map(([c, l]) => l * 1000 + c));
   const isPit = (c: number, l: number) => pitSet.has(l * 1000 + c);
+  const crumbleSet = new Set(med0.crumble.map(([c, l]) => l * 1000 + c));
+  const routes = med0.platforms.map(([id, lane, c0, c1]) => ({ id, lane, c0, c1 }));
+  const onFerryRoute = (c: number, l: number) =>
+    routes.some((p) => p.lane === l && c >= p.c0 && c <= p.c1);
+  // The driver avoids crumble entirely (like the server bots) and treats
+  // pit cells off ferry routes as walls.
+  const blockedCell = (c: number, l: number) =>
+    (isPit(c, l) && !onFerryRoute(c, l)) || crumbleSet.has(l * 1000 + c);
+  const ferryAligned = (s: MedusaSnapshot, c: number, l: number) =>
+    s.platforms.some(
+      ([, lane, c0, c1, pos]) => lane === l && c >= c0 && c <= c1 && Math.abs(pos - c) <= 0.35,
+    );
   const victim = bots[0].slot; // no camera, taps through red → statue (classic)
-  const faller = bots[1].slot; // steered into the nearest pit
+  const pitBumper = bots[1].slot; // deliberately hops at pits — must just bounce
   const blindRunner = bots[2].slot; // eyes-closed reports, never stops hopping
   const openEyes = bots[3].slot; // eyes-open reports, stands perfectly still
+  let bumpAttempts = 0;
 
   let driverTick = 0;
   const medusaDriver = setInterval(() => {
@@ -489,9 +506,9 @@ async function main() {
     if (!s || s.kind !== 'medusa' || s.phase !== 'play') return;
     const pos = new Map(s.players.map((p) => [p[0], p] as const));
     const green = s.gaze.state === 'green';
-    // BFS to the finish column around pits — greedy dodging can oscillate
-    // forever inside a pit pocket; the generated fields are always solvable.
-    const dodge = (col: number, lane: number): 'f' | 'l' | 'r' | 'b' => {
+    // BFS to the finish column around obstacles; returns null to wait for a
+    // ferry (boarding hops are only sent when the ferry is actually there).
+    const dodge = (col: number, lane: number): 'f' | 'l' | 'r' | 'b' | null => {
       const key = (c: number, l: number) => l * 1000 + c;
       const prev = new Map<number, number>();
       const queue = [key(col, lane)];
@@ -510,35 +527,44 @@ async function main() {
           const nl = l + dl;
           if (nc < 0 || nc >= s.length || nl < 0 || nl >= s.lanes) continue;
           const nk = key(nc, nl);
-          if (prev.has(nk) || isPit(nc, nl)) continue;
+          if (prev.has(nk) || blockedCell(nc, nl)) continue;
           prev.set(nk, cur);
           queue.push(nk);
         }
       }
-      if (goal < 0) return 'f'; // unreachable start (shouldn't happen) — press on
+      if (goal < 0) return null; // walled in (cannot happen)
       let step = goal;
       while (prev.get(step) !== key(col, lane) && prev.get(step) !== -1) {
         step = prev.get(step)!;
       }
       if (prev.get(step) === -1) return 'f'; // already at the goal cell
-      const dc = (step % 1000) - col;
-      const dl = Math.floor(step / 1000) - lane;
+      const sc = step % 1000;
+      const sl = Math.floor(step / 1000);
+      if (isPit(sc, sl) && !ferryAligned(s, sc, sl)) return null; // wait at the bank
+      const dc = sc - col;
+      const dl = sl - lane;
       return dc === 1 ? 'f' : dc === -1 ? 'b' : dl === -1 ? 'l' : 'r';
+    };
+    const hop = (bot: (typeof bots)[number], d: 'f' | 'l' | 'r' | 'b' | null) => {
+      if (d) bot.socket.emit('input', { t: 'hop', d });
     };
     for (const bot of bots) {
       const p = pos.get(bot.slot);
       if (!p || p[3] !== 0) continue;
       const [, col, lane] = p;
+      // Mid-ferry: step off when the far bank is reachable, else keep riding.
+      const riding = isPit(col, lane);
       if (bot.slot === victim) {
-        // Dodges pits but ignores the gaze entirely, at a jog — guaranteed to
-        // still be mid-field when red catches a hop.
-        if (driverTick % 3 === 0) bot.socket.emit('input', { t: 'hop', d: dodge(col, lane) });
+        // Dodges obstacles but ignores the gaze entirely, at a jog —
+        // guaranteed to still be mid-field when red catches a hop.
+        if (driverTick % 3 !== 0) continue;
+        hop(bot, riding ? (blockedCell(col + 1, lane) ? null : 'f') : dodge(col, lane));
         continue;
       }
       if (bot.slot === blindRunner) {
         // Streams eyes-closed and sprints straight through red: legal.
         bot.socket.emit('input', { t: 'eyes', open: false, seen: true });
-        bot.socket.emit('input', { t: 'hop', d: dodge(col, lane) });
+        hop(bot, riding ? (blockedCell(col + 1, lane) ? null : 'f') : dodge(col, lane));
         continue;
       }
       if (bot.slot === openEyes) {
@@ -547,26 +573,29 @@ async function main() {
         continue;
       }
       if (!green) continue;
-      if (bot.slot === faller) {
+      if (bot.slot === pitBumper) {
+        // Steers at the nearest true pit and hops straight into it, forever.
+        // Pits block now — every attempt must bounce off harmlessly.
         let best: [number, number] | null = null;
         let bestD = Infinity;
-        for (const [c, l] of s.pits) {
-          if (c < col) continue;
+        for (const [c, l] of med0.pits) {
+          if (c < col || onFerryRoute(c, l)) continue;
           const d = c - col + Math.abs(l - lane);
           if (d < bestD) {
             bestD = d;
             best = [c, l];
           }
         }
-        if (best && best[1] !== lane) {
-          bot.socket.emit('input', { t: 'hop', d: best[1] < lane ? 'l' : 'r' });
-        } else {
-          bot.socket.emit('input', { t: 'hop', d: 'f' });
-        }
+        if (!best) continue;
+        const d = best[1] !== lane ? (best[1] < lane ? 'l' : 'r') : 'f';
+        const tc = d === 'f' ? col + 1 : col;
+        const tl = d === 'l' ? lane - 1 : d === 'r' ? lane + 1 : lane;
+        if (isPit(tc, tl)) bumpAttempts++;
+        hop(bot, d);
         continue;
       }
-      // Safe runner: sprint on green, dodge pits.
-      bot.socket.emit('input', { t: 'hop', d: dodge(col, lane) });
+      // Safe runner: sprint on green, route around obstacles, ride ferries.
+      hop(bot, riding ? (blockedCell(col + 1, lane) ? null : 'f') : dodge(col, lane));
     }
   }, 130);
 
@@ -610,17 +639,19 @@ async function main() {
   await waitFor("the statue's phone to learn its fate", 5000, () =>
     statueBot.me?.medusaState === 'stone' ? true : null,
   );
-  await waitFor('the pit-seeker to fall in', 45000, () => {
-    const s = latestSnapshot as MedusaSnapshot | null;
-    if (!s || s.kind !== 'medusa') return null;
-    const p = s.players.find((q) => q[0] === faller);
-    return p && p[3] === 3 ? true : null;
-  });
-  const fallerState = () => bots[1].me?.medusaState;
-  if (fallerState() !== 'fallen') {
-    await sleep(500);
-    if (fallerState() !== 'fallen') fail('faller phone state wrong');
+  await waitFor('the pit bumper to bounce off pits repeatedly', 45000, () =>
+    bumpAttempts >= 5 ? true : null,
+  );
+  {
+    const s = latestSnapshot as unknown as MedusaSnapshot;
+    const p = s.players.find((q) => q[0] === pitBumper);
+    if (!p) fail('pit bumper missing from snapshot');
+    else {
+      if (p[3] !== 0 && p[3] !== 1) fail(`pit bumper state ${p[3]} — pits must not eliminate`);
+      if (isPit(p[1], p[2])) fail('pit bumper ended up inside a pit cell');
+    }
   }
+  console.log(`medusa: pits block — ${bumpAttempts} deliberate hops at pits all bounced`);
   const medDone = await waitFor('most runners to finish', 95000, () => {
     const s = latestSnapshot as MedusaSnapshot | null;
     if (!s || s.kind !== 'medusa') return null;
@@ -633,13 +664,16 @@ async function main() {
   if (new Set(medDone.finished).size !== medDone.finished.length) {
     fail('medusa placements contain duplicates');
   }
+  if (medDone.players.some((p) => p[3] > 2)) {
+    fail('a player left running/stone/finished — nothing else exists now');
+  }
   const winner = bots.find((b) => b.slot === medDone.finished[0]);
   if (winner && winner.me?.placement !== 1) {
     await sleep(400);
     if (winner.me?.placement !== 1) fail('winner phone did not get placement 1');
   }
   console.log(
-    `medusa: ${medDone.finished.length} escaped, statue + pit-fall confirmed, winner slot ${medDone.finished[0]}`,
+    `medusa: ${medDone.finished.length} escaped, statue + pit-bounce confirmed, winner slot ${medDone.finished[0]}`,
   );
   stage.emit('host:lobby');
   await waitFor('lobby after medusa', 5000, () =>
@@ -694,9 +728,8 @@ async function main() {
   });
   if (botMedusa.finished.length < 1) fail('no bot escaped Medusa in a full round');
   const botStones = botMedusa.players.filter((p) => p[3] === 1).length;
-  const botFalls = botMedusa.players.filter((p) => p[3] === 3).length;
   console.log(
-    `bots: medusa round complete — ${botMedusa.finished.length} escaped, ${botStones} statues, ${botFalls} in pits`,
+    `bots: medusa round complete — ${botMedusa.finished.length} escaped, ${botStones} statues`,
   );
 
   // ==========================================================================
