@@ -502,73 +502,190 @@ console.log('unit: medusa ferry platforms OK');
 }
 console.log('unit: medusa crumbling ground OK');
 
-// Eye mode: looking during red petrifies (even standing still); eyes-closed
-// players may keep moving; stale/no camera silently means classic rules.
+// v2 gaze meter: her gaze fills a per-player meter (caught fast, unknown
+// slow), safety drains it, full = statue; only provable CAUGHT raises the
+// stone tiers; movement is never the crime.
 {
-  // Toggle off → eyes inputs are inert.
+  // Toggle off → gaze inputs are inert.
   {
     const { game, internals } = makeMedusa(2, false);
-    game.input(1, { t: 'eyes', open: false, seen: true });
-    assert.equal(internals.runners.get(1).eyesAt, -Infinity, 'eyes inert when off');
+    game.input(1, { t: 'gaze', s: 1, c: 0.9 });
+    assert.equal(internals.runners.get(1).gzAt, -Infinity, 'gaze inert when off');
   }
 
-  const { game, internals } = makeMedusa(6, true);
-  const hold = (t: number) => {
+  const centerLaneOf = (internals: any) => Math.floor((internals.lanes - 1) / 2);
+  // Position a runner mid-field on the center line: always inside the
+  // sweeping cone, so meter math is deterministic.
+  const place = (internals: any, slot: number, col = 5) => {
+    const r = internals.runners.get(slot);
+    r.col = col;
+    r.lane = centerLaneOf(internals);
+    return r;
+  };
+  const holdRed = (internals: any, t: number) => {
     internals.t = t;
     internals.gaze = 'red';
-    internals.gazeUntil = t + 30; // hold red through the test ticks
+    internals.gazeUntil = t + 1000;
+    internals.redSince = t - 2; // well past RED_START_GRACE
+  };
+  // Tick n times, refreshing a gaze report so it never goes stale.
+  const run = (game: Medusa, internals: any, slot: number, s: number, c: number, n: number) => {
+    for (let i = 0; i < n; i++) {
+      if (i % 8 === 0) game.input(slot, { t: 'gaze', s: s as 0 | 1 | 2 | 3, c });
+      internals.tick(1 / 20);
+    }
   };
 
-  // (a) fresh OPEN eyes during red: safe inside the 0.6s grace, petrified after.
-  const r1 = internals.runners.get(1);
-  hold(10);
-  game.input(1, { t: 'eyes', open: true, seen: true });
-  internals.redSince = 10 - 0.4; // inside EYES_GRACE
-  internals.tick(1 / 20);
-  assert.equal(r1.state, 0, 'open eyes inside the grace window survive');
-  internals.redSince = internals.t - 0.7; // past EYES_GRACE
-  internals.tick(1 / 20);
-  assert.equal(r1.state, 1, 'open eyes during red petrify — even standing still');
+  // (a) CAUGHT fills in ~1s, raising tiers 1 and 2 on the way (with buzzes).
+  {
+    const { game, internals, buzzes } = makeMedusa(2, true);
+    const r = place(internals, 1);
+    holdRed(internals, 10);
+    run(game, internals, 1, 2, 0.9, 16); // 0.8s of caught
+    assert.equal(r.state, 0, 'still flesh at 0.8s');
+    assert.ok(r.meter > 0.7 && r.meter < 0.9, `caught fill rate (meter ${r.meter})`);
+    assert.equal(r.tier, 2, 'crossed both tier thresholds');
+    assert.ok(buzzes.some(([slot, type]) => slot === 1 && type === 'creep'), 'creep buzz');
+    run(game, internals, 1, 2, 0.9, 6);
+    assert.equal(r.state, 1, 'meter full → statue');
+  }
 
-  // (b) CLOSED eyes during red: hopping is allowed (blind running).
-  const r2 = internals.runners.get(2);
-  r2.col = 5;
-  r2.lane = 3;
-  internals.pits.delete(3 * 24 + 6);
-  internals.crumbleStage.delete(3 * 24 + 6);
-  hold(12);
-  internals.redSince = 12 - 2;
-  game.input(2, { t: 'eyes', open: false, seen: true });
-  game.input(2, { t: 'hop', d: 'f' });
-  assert.equal(r2.col, 6, 'eyes-closed hop during red moves');
-  assert.equal(r2.state, 0, 'blind runner survives');
-  internals.tick(1 / 20);
-  assert.equal(r2.state, 0, 'tick does not petrify closed eyes');
+  // (b) UNKNOWN (no camera) fills at the slow-death rate — and never tiers.
+  {
+    const { game, internals } = makeMedusa(2, true);
+    const r = place(internals, 1);
+    holdRed(internals, 10);
+    for (let i = 0; i < 20; i++) internals.tick(1 / 20); // 1s, no reports ever
+    assert.ok(r.meter > 0.33 && r.meter < 0.47, `unknown fill rate (meter ${r.meter})`);
+    assert.equal(r.tier, 0, 'uncertainty never slows — tier stays 0');
+    for (let i = 0; i < 35; i++) internals.tick(1 / 20);
+    assert.equal(r.state, 1, 'hiding from the camera is a slow death');
+    void game;
+  }
 
-  // (c) stale eye reports (>1.5s) → classic rules: standing open-eyed is
-  // safe, but hopping during red kills.
-  const r3 = internals.runners.get(3);
-  r3.col = 5;
-  r3.lane = 4;
-  hold(20);
-  game.input(3, { t: 'eyes', open: false, seen: true }); // closed… but about to go stale
-  internals.t = 22; // report now 2s old
-  internals.gazeUntil = 52;
-  internals.redSince = 20;
-  internals.tick(1 / 20);
-  assert.equal(r3.state, 0, 'stale eyes: standing still is safe (classic)');
-  game.input(3, { t: 'hop', d: 'f' });
-  assert.equal(r3.state, 1, 'stale eyes: hopping during red kills (classic)');
+  // (c) Safe states drain the meter and tiers fall with hysteresis.
+  {
+    const { game, internals } = makeMedusa(2, true);
+    const r = place(internals, 1);
+    holdRed(internals, 10);
+    r.meter = 0.95;
+    r.tier = 2;
+    run(game, internals, 1, 1, 0.9, 8); // 0.4s of eyes closed
+    assert.ok(r.meter > 0.6 && r.meter < 0.75, `safe drain rate (meter ${r.meter})`);
+    assert.equal(r.tier, 2, 'hysteresis: tier 2 holds above the 0.6 exit');
+    run(game, internals, 1, 1, 0.9, 14);
+    assert.ok(r.meter < 0.3, 'drained on');
+    assert.equal(r.tier, 0, 'tiers fell through their exits');
+    assert.equal(r.state, 0, 'redemption is possible');
+  }
 
-  // (d) a player whose camera never reported behaves fully classic.
-  const r4 = internals.runners.get(4);
-  r4.col = 5;
-  r4.lane = 5;
-  internals.tick(1 / 20);
-  assert.equal(r4.state, 0, 'no camera: standing still is safe');
-  game.input(4, { t: 'hop', d: 'f' });
-  assert.equal(r4.state, 1, 'no camera: hopping during red kills');
+  // (d) Start-of-red fairness grace: the meter holds still.
+  {
+    const { game, internals } = makeMedusa(2, true);
+    const r = place(internals, 1);
+    internals.t = 10;
+    internals.gaze = 'red';
+    internals.gazeUntil = 1000;
+    internals.redSince = 10 - 0.2; // fresh red
+    run(game, internals, 1, 2, 0.9, 8); // 0.4s caught, still inside 0.8s grace
+    assert.equal(r.meter, 0, 'meter frozen during the fairness grace');
+  }
+
+  // (e) Low-confidence CAUGHT degrades to UNKNOWN: slow fill, no tier.
+  {
+    const { game, internals } = makeMedusa(2, true);
+    const r = place(internals, 1);
+    holdRed(internals, 10);
+    run(game, internals, 1, 2, 0.3, 20); // caught but c < 0.6
+    assert.ok(r.meter > 0.3 && r.meter < 0.5, `degraded fill (meter ${r.meter})`);
+    assert.equal(r.tier, 0, 'no tier from borderline frames');
+  }
+
+  // (f) Eyes-closed linger: a closed report holds through a tracking gap
+  // (heads tilt out of frame), then decays to UNKNOWN.
+  {
+    const { game, internals } = makeMedusa(2, true);
+    const r = place(internals, 1);
+    holdRed(internals, 10);
+    r.meter = 0.5;
+    game.input(1, { t: 'gaze', s: 1, c: 0.9 }); // closed, then silence
+    for (let i = 0; i < 24; i++) internals.tick(1 / 20); // 1.2s: stale but lingering
+    assert.ok(r.meter < 0.5, 'closed linger still drains through the gap');
+    const after = r.meter;
+    // The linger runs from the LAST closed sighting (~t+0.8), so give it
+    // 1.6s more to expire and then fill.
+    for (let i = 0; i < 32; i++) internals.tick(1 / 20);
+    assert.ok(r.meter > after, 'linger expired → unknown fills again');
+  }
+
+  // (g) Statue cover: a statue between the eye and a caught runner blocks
+  // the gaze — the meter holds instead of filling.
+  {
+    const { game, internals } = makeMedusa(3, true);
+    const cover = place(internals, 2, 18);
+    cover.state = 1; // hand-placed statue on the sight line
+    internals.shadowDirty = true;
+    const r = place(internals, 1, 10);
+    holdRed(internals, 10);
+    run(game, internals, 1, 2, 0.9, 20); // 1s of caught — but occluded
+    assert.equal(r.meter, 0, 'behind a statue her gaze never lands');
+    assert.equal(r.state, 0);
+  }
+
+  // (h) Movement is never the fail condition in v2: a caught runner may
+  // still hop during deep red — the meter is what kills, not the hop.
+  {
+    const { game, internals } = makeMedusa(2, true);
+    const r = place(internals, 1);
+    holdRed(internals, 10);
+    game.input(1, { t: 'gaze', s: 2, c: 0.9 });
+    internals.tick(1 / 20);
+    internals.pits.delete(r.lane * 24 + 6);
+    internals.crumbleStage.delete(r.lane * 24 + 6);
+    game.input(1, { t: 'hop', d: 'f' });
+    assert.equal(r.col, 6, 'hop lands during red in v2');
+    assert.equal(r.state, 0, 'the hop itself never petrifies');
+  }
+
+  // (i) Stone slows: tier and shield movement stretch the hop cooldown.
+  {
+    const { game, internals } = makeMedusa(2, true);
+    const r = place(internals, 1);
+    internals.gaze = 'green';
+    internals.gazeUntil = 1000;
+    internals.t = 10;
+    r.tier = 1; // cooldown 0.36s
+    const cell = (c: number) => {
+      internals.pits.delete(r.lane * 24 + c);
+      internals.crumbleStage.delete(r.lane * 24 + c);
+    };
+    cell(6);
+    cell(7);
+    game.input(1, { t: 'hop', d: 'f' });
+    assert.equal(r.col, 6);
+    internals.t = 10.25; // inside the tier-1 cooldown
+    game.input(1, { t: 'hop', d: 'f' });
+    assert.equal(r.col, 6, 'tier-1 cooldown swallows the hop');
+    internals.t = 10.4;
+    game.input(1, { t: 'hop', d: 'f' });
+    assert.equal(r.col, 7, 'and releases after 0.36s');
+
+    // Shield-up during red: deliberate, careful movement (0.18 * 2.5).
+    holdRed(internals, 20);
+    r.tier = 0;
+    r.eff = 0; // GZ_SHIELD
+    cell(8);
+    cell(9);
+    game.input(1, { t: 'hop', d: 'f' });
+    assert.equal(r.col, 8);
+    internals.t = 20.3;
+    game.input(1, { t: 'hop', d: 'f' });
+    assert.equal(r.col, 8, 'shield movement is slow');
+    internals.t = 20.5;
+    game.input(1, { t: 'hop', d: 'f' });
+    assert.equal(r.col, 9, 'but it moves');
+  }
 }
-console.log('unit: medusa eye mode OK');
+console.log('unit: medusa v2 gaze meter OK');
 
 console.log('\nUNIT PASS ✅');

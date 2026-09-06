@@ -493,11 +493,16 @@ async function main() {
     s.platforms.some(
       ([, lane, c0, c1, pos]) => lane === l && c >= c0 && c <= c1 && Math.abs(pos - c) <= 0.35,
     );
-  const victim = bots[0].slot; // no camera, taps through red → statue (classic)
+  const noCamera = bots[0].slot; // never reports — the slow death must find them
   const pitBumper = bots[1].slot; // deliberately hops at pits — must just bounce
-  const blindRunner = bots[2].slot; // eyes-closed reports, never stops hopping
-  const openEyes = bots[3].slot; // eyes-open reports, stands perfectly still
+  const closedRunner = bots[2].slot; // streams eyes-closed, never stops hopping
+  const caughtStarer = bots[3].slot; // streams CAUGHT, stands still → tiers → stone
+  const shieldMover = bots[4].slot; // streams SHIELD, keeps moving through red
   let bumpAttempts = 0;
+  let starerTierSeen = 0;
+  let noCameraMeterSeen = 0;
+  let shieldRedFrom = -1;
+  let shieldMovedInRed = false;
 
   let driverTick = 0;
   const medusaDriver = setInterval(() => {
@@ -548,32 +553,57 @@ async function main() {
     const hop = (bot: (typeof bots)[number], d: 'f' | 'l' | 'r' | 'b' | null) => {
       if (d) bot.socket.emit('input', { t: 'hop', d });
     };
+    // Track meter/tier evidence for the assertions below.
+    {
+      const starer = pos.get(caughtStarer);
+      if (starer) starerTierSeen = Math.max(starerTierSeen, starer[6]);
+      const nc = pos.get(noCamera);
+      if (nc) noCameraMeterSeen = Math.max(noCameraMeterSeen, nc[5]);
+      const sm = pos.get(shieldMover);
+      if (sm && sm[3] === 0) {
+        if (s.gaze.state === 'red') {
+          if (shieldRedFrom < 0) shieldRedFrom = sm[1];
+          else if (sm[1] > shieldRedFrom) shieldMovedInRed = true;
+        } else {
+          shieldRedFrom = -1;
+        }
+      }
+    }
     for (const bot of bots) {
       const p = pos.get(bot.slot);
       if (!p || p[3] !== 0) continue;
       const [, col, lane] = p;
       // Mid-ferry: step off when the far bank is reachable, else keep riding.
       const riding = isPit(col, lane);
-      if (bot.slot === victim) {
-        // Dodges obstacles but ignores the gaze entirely, at a jog —
-        // guaranteed to still be mid-field when red catches a hop.
-        if (driverTick % 3 !== 0) continue;
+      const advance = () =>
         hop(bot, riding ? (blockedCell(col + 1, lane) ? null : 'f') : dodge(col, lane));
+      if (bot.slot === noCamera) {
+        // Never streams gaze; only ever moves on green. The meter must still
+        // find them during red — hiding from the camera is a slow death.
+        if (green && driverTick % 3 === 0) advance();
         continue;
       }
-      if (bot.slot === blindRunner) {
-        // Streams eyes-closed and sprints straight through red: legal.
-        bot.socket.emit('input', { t: 'eyes', open: false, seen: true });
-        hop(bot, riding ? (blockedCell(col + 1, lane) ? null : 'f') : dodge(col, lane));
+      if (bot.slot === caughtStarer) {
+        // Streams high-confidence CAUGHT and never moves: tiers must climb
+        // and the meter must fill to a statue.
+        bot.socket.emit('input', { t: 'gaze', s: 2, c: 0.9 });
         continue;
       }
-      if (bot.slot === openEyes) {
-        // Streams eyes-open and never moves: red must petrify them anyway.
-        bot.socket.emit('input', { t: 'eyes', open: true, seen: true });
+      if (bot.slot === shieldMover) {
+        // Streams SHIELD and keeps hopping through red: slow but legal.
+        bot.socket.emit('input', { t: 'gaze', s: 0, c: 0.9 });
+        advance();
+        continue;
+      }
+      // Everyone else (closedRunner included) plays eyes-closed and sprints
+      // straight through red — movement is never the crime in v2.
+      bot.socket.emit('input', { t: 'gaze', s: 1, c: 0.9 });
+      if (bot.slot !== pitBumper) {
+        advance();
         continue;
       }
       if (!green) continue;
-      if (bot.slot === pitBumper) {
+      {
         // Steers at the nearest true pit and hops straight into it, forever.
         // Pits block now — every attempt must bounce off harmlessly.
         let best: [number, number] | null = null;
@@ -592,10 +622,7 @@ async function main() {
         const tl = d === 'l' ? lane - 1 : d === 'r' ? lane + 1 : lane;
         if (isPit(tc, tl)) bumpAttempts++;
         hop(bot, d);
-        continue;
       }
-      // Safe runner: sprint on green, route around obstacles, ride ferries.
-      hop(bot, riding ? (blockedCell(col + 1, lane) ? null : 'f') : dodge(col, lane));
     }
   }, 130);
 
@@ -604,40 +631,49 @@ async function main() {
     if (!s || s.kind !== 'medusa') return null;
     return s.players.some((p) => p[1] >= 5) ? true : null;
   });
-  // Snapshot eye flags: -1 for camera-less players, 1 for the blind runner,
-  // 0 for the open-eyed starer.
+  // Snapshot gaze flags: 3 (unknown) for the camera-less, 1 (closed) for the
+  // blind sprinter, 0 (shield) for the shield mover.
   {
     const s = latestSnapshot as unknown as MedusaSnapshot;
-    const eyeOf = (slot: number) => s.players.find((p) => p[0] === slot)?.[4];
-    if (eyeOf(victim) !== -1) fail(`victim eye flag ${eyeOf(victim)}, expected -1`);
-    if (eyeOf(blindRunner) !== 1) fail(`blind runner eye flag ${eyeOf(blindRunner)}, expected 1`);
-    const staringEye = eyeOf(openEyes);
-    if (staringEye !== 0 && staringEye !== undefined) {
-      // may already be petrified (flag then reads whatever their last state was)
+    if (!s.eyesMode) fail('snapshot must flag eyesMode for a v2 round');
+    const gzOf = (slot: number) => s.players.find((p) => p[0] === slot)?.[4];
+    if (gzOf(noCamera) !== 3) fail(`noCamera gz flag ${gzOf(noCamera)}, expected 3`);
+    if (gzOf(closedRunner) !== 1) {
+      fail(`closed runner gz flag ${gzOf(closedRunner)}, expected 1`);
     }
+    if (gzOf(shieldMover) !== 0) fail(`shield mover gz flag ${gzOf(shieldMover)}, expected 0`);
   }
-  await waitFor('the open-eyed starer to petrify without moving', 30000, () => {
+  await waitFor('the caught starer to tier up and petrify standing still', 45000, () => {
     const s = latestSnapshot as MedusaSnapshot | null;
     if (!s || s.kind !== 'medusa') return null;
-    const p = s.players.find((q) => q[0] === openEyes);
+    const p = s.players.find((q) => q[0] === caughtStarer);
     return p && p[3] === 1 ? true : null;
   });
-  await waitFor('the blind runner to finish alive', 60000, () => {
+  if (starerTierSeen < 1) {
+    fail(`caught starer petrified without ever reaching tier 1 (saw ${starerTierSeen})`);
+  }
+  await waitFor('the closed-eyes runner to finish alive', 60000, () => {
     const s = latestSnapshot as MedusaSnapshot | null;
     if (!s || s.kind !== 'medusa') return null;
-    const p = s.players.find((q) => q[0] === blindRunner);
-    if (p && (p[3] === 1 || p[3] === 3)) fail('blind runner died — eyes-closed red hops must be legal');
+    const p = s.players.find((q) => q[0] === closedRunner);
+    if (p && p[3] === 1) fail('closed runner died — eyes-closed red sprints must be legal');
     return p && p[3] === 2 ? true : null;
   });
-  console.log('medusa: eye mode — open eyes petrified standing still, blind runner escaped');
-  const statueBot = await waitFor('the reckless tapper to petrify', 30000, () => {
+  console.log(
+    `medusa: v2 gaze — caught starer tiered (max ${starerTierSeen}) then petrified; blind sprinter escaped`,
+  );
+  const statueBot = await waitFor('the camera-less player to die the slow death', 90000, () => {
     const s = latestSnapshot as MedusaSnapshot | null;
     if (!s || s.kind !== 'medusa') return null;
-    const p = s.players.find((q) => q[0] === victim);
+    const p = s.players.find((q) => q[0] === noCamera);
     return p && p[3] === 1 ? bots[0] : null;
   });
+  if (noCameraMeterSeen <= 0) fail('noCamera meter never rose — slow death not observed');
   await waitFor("the statue's phone to learn its fate", 5000, () =>
     statueBot.me?.medusaState === 'stone' ? true : null,
+  );
+  console.log(
+    `medusa: hiding from the camera was a slow death (meter peaked ${noCameraMeterSeen})`,
   );
   await waitFor('the pit bumper to bounce off pits repeatedly', 45000, () =>
     bumpAttempts >= 5 ? true : null,
@@ -666,6 +702,13 @@ async function main() {
   }
   if (medDone.players.some((p) => p[3] > 2)) {
     fail('a player left running/stone/finished — nothing else exists now');
+  }
+  if (!shieldMovedInRed) {
+    fail('shield mover never advanced during red — shield movement must be legal');
+  }
+  {
+    const sm = medDone.players.find((p) => p[0] === shieldMover);
+    if (sm && sm[3] === 1) fail('shield mover petrified — shield-up is a safe state');
   }
   const winner = bots.find((b) => b.slot === medDone.finished[0]);
   if (winner && winner.me?.placement !== 1) {

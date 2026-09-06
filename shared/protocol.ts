@@ -123,15 +123,30 @@ export const MEDUSA_RUNNING = 0;
 export const MEDUSA_STONE = 1;
 export const MEDUSA_FINISHED = 2;
 
-// Eye flag in the player tuple
-export const MEDUSA_EYES_CLASSIC = -1; // no camera / stale — freeze rules
-export const MEDUSA_EYES_OPEN = 0;
-export const MEDUSA_EYES_CLOSED = 1;
+// Gaze-state codes (phone → server report, and the gz element in the player
+// tuple). During red, SHIELD and CLOSED are the two safe states; CAUGHT
+// (eyes open, gaze off the phone, high confidence) fills the death meter
+// fast, UNKNOWN (no face / camera covered / stale) fills it slowly — hiding
+// from the camera is never safety, just a slower death.
+export const GZ_SHIELD = 0; // eyes open, gaze on the phone
+export const GZ_CLOSED = 1; // eyes closed (may move at full speed, blind)
+export const GZ_CAUGHT = 2; // eyes open and off the phone — her gaze meets yours
+export const GZ_UNKNOWN = 3; // tracking lost / covered / never reported
+export const GZ_CLASSIC = -1; // room runs classic rules (eye mode off)
 
-// [slot, col, lane, state, eyes] — col 0 = start edge (left), col length-1 =
-// the finish column at Medusa's feet (right); lane = depth position on
-// screen; eyes = MEDUSA_EYES_* (always CLASSIC when eye mode is off).
-export type MedusaPlayerTuple = [number, number, number, number, number];
+// [slot, col, lane, state, gz, meterQ, tier] — col 0 = start edge (left),
+// col length-1 = the finish at Medusa's feet (right); lane = depth position;
+// gz = GZ_* (always CLASSIC when eye mode is off); meterQ = death meter
+// 0..100; tier = stone tier 0..2 (petrified IS tier 3, carried by state).
+export type MedusaPlayerTuple = [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+];
 
 // A ferry platform shuttling across a chasm band: [id, lane, c0, c1, pos].
 // It occupies cell (round(pos), lane) and bounces between columns c0 and c1;
@@ -153,9 +168,12 @@ export interface MedusaSnapshot {
   pits: [number, number][]; // [col, lane] — includes chasm band cells
   platforms: MedusaPlatformTuple[];
   crumble: MedusaCrumbleTuple[];
+  eyesMode: boolean; // v2 camera rules are live this round
   gaze: {
     state: MedusaGazeState;
     tLeft: number; // seconds remaining in this gaze state
+    dir: number; // sweep angle (radians off the field axis, 0 = center)
+    target: number; // slot her eyes swivel toward (highest meter), 0 = none
   };
   players: MedusaPlayerTuple[];
   // slots that pinged "find me" since the previous snapshot (beacon cue)
@@ -204,9 +222,10 @@ export interface MeState {
   col?: number; // current progress column
   fieldLength?: number;
   eyeMode?: boolean; // room has eye mode on — the phone should arm its camera
+  tier?: number; // stone tier 0..2 (how far the stone has crept)
 }
 
-export type BuzzType = 'bumped' | 'eliminated' | 'locked' | 'go';
+export type BuzzType = 'bumped' | 'eliminated' | 'locked' | 'go' | 'creep';
 
 // ---------------------------------------------------------------------------
 // Socket event payloads
@@ -241,9 +260,9 @@ export type InputPayload =
   | { t: 'touch'; down: boolean } // Puzzle: finger on/off (drives glow)
   | { t: 'hop'; d: 'f' | 'l' | 'r' | 'b' } // Medusa: hop forward/left/right/back
   | { t: 'ping' } // Medusa: cosmetic "find me" beacon (always safe)
-  // Medusa eye mode: on-device detection result — open/closed + whether a
-  // face is currently visible. Sent on change plus a ~500ms heartbeat.
-  | { t: 'eyes'; open: boolean; seen: boolean };
+  // Medusa eye mode: on-device gaze classification — a GZ_* state code plus
+  // a 0..1 confidence. Sent on change plus a ~250ms heartbeat.
+  | { t: 'gaze'; s: 0 | 1 | 2 | 3; c: number };
 
 export interface HostStartRequest {
   game: GameId;

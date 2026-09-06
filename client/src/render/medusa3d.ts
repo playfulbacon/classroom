@@ -36,6 +36,7 @@ interface Avatar {
   fromZ: number;
   state: number;
   stoneAt: number;
+  tier: number; // 0..2 — how far the stone has crept
   bobPhase: number;
   pingUntil: number;
 }
@@ -481,9 +482,22 @@ export function createMedusaRenderer(
       fromZ: 0,
       state: ST_RUN,
       stoneAt: 0,
+      tier: 0,
       bobPhase: (slot % 17) * 0.4,
       pingUntil: 0,
     };
+  }
+
+  // Stone creeping up a runner: their colors gray out tier by tier.
+  function applyTier(av: Avatar, tier: number) {
+    av.tier = tier;
+    if (av.state !== ST_RUN) return;
+    const base = parseColor(av.color);
+    const gray = new THREE.Color(0x8d8d99);
+    av.bodyMat.color.copy(base.clone().lerp(gray, tier * 0.38));
+    av.headMat.color.copy(
+      base.clone().lerp(new THREE.Color('#ffffff'), 0.35).lerp(gray, tier * 0.38),
+    );
   }
 
   function turnToStone(av: Avatar) {
@@ -585,7 +599,7 @@ export function createMedusaRenderer(
       finishedSeen = s.finished.length;
     }
 
-    for (const [slot, col, lane, state, eyes] of s.players) {
+    for (const [slot, col, lane, state, gz, , tier] of s.players) {
       let av = avatars.get(slot);
       if (!av) {
         av = makeAvatar(slot, colors.get(slot) ?? '#999');
@@ -621,7 +635,8 @@ export function createMedusaRenderer(
         av.state = state;
       }
       const blindfold = av.group.getObjectByName('blindfold');
-      if (blindfold) blindfold.visible = eyes === 1 && state === ST_RUN;
+      if (blindfold) blindfold.visible = gz === 1 && state === ST_RUN; // GZ_CLOSED
+      if (tier !== av.tier) applyTier(av, tier);
     }
     for (const slot of s.pings) {
       const av = avatars.get(slot);
