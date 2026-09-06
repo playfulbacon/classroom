@@ -44,8 +44,8 @@ function mediapipeWasm(): Plugin {
 export default defineConfig({
   plugins: [react(), mediapipeWasm()],
   build: {
-    // the medusa3d chunk intentionally carries three.js and only loads on the
-    // stage when a Medusa round starts
+    // three.js lands in a lazy chunk shared by the stage renderer (medusa3d)
+    // and the phone's shield renderer (shield3d) — neither loads eagerly
     chunkSizeWarningLimit: 700,
   },
   server: {

@@ -518,7 +518,7 @@ async function main() {
   let bumpAttempts = 0;
   let starerTierSeen = 0;
   let noCameraMeterSeen = 0;
-  let shieldRedFrom = -1;
+  let shieldLastPos = -1;
   let shieldMovedInRed = false;
 
   let driverTick = 0;
@@ -577,13 +577,21 @@ async function main() {
       const nc = pos.get(noCamera);
       if (nc) noCameraMeterSeen = Math.max(noCameraMeterSeen, nc[5]);
       const sm = pos.get(shieldMover);
-      if (sm && sm[3] === 0) {
-        if (s.gaze.state === 'red') {
-          if (shieldRedFrom < 0) shieldRedFrom = sm[1];
-          else if (sm[1] > shieldRedFrom) shieldMovedInRed = true;
-        } else {
-          shieldRedFrom = -1;
+      if (sm && sm[3] === 0 && s.gaze.state === 'red') {
+        // Cell changes between red snapshots prove shield hops land during
+        // red — ferry rides (pit cells) don't count.
+        const cell = sm[2] * 1000 + sm[1];
+        if (
+          shieldLastPos >= 0 &&
+          cell !== shieldLastPos &&
+          !isPit(sm[1], sm[2]) &&
+          !pitSet.has(shieldLastPos)
+        ) {
+          shieldMovedInRed = true;
         }
+        shieldLastPos = cell;
+      } else {
+        shieldLastPos = -1;
       }
     }
     for (const bot of bots) {
@@ -608,9 +616,10 @@ async function main() {
         continue;
       }
       if (bot.slot === shieldMover) {
-        // Streams SHIELD and keeps hopping through red: slow but legal.
+        // Streams SHIELD and — until red movement is proven — hops ONLY
+        // during red, so the property can't be dodged by crossing on greens.
         bot.socket.emit('input', { t: 'gaze', s: 0, c: 0.9 });
-        advance();
+        if (shieldMovedInRed || s.gaze.state === 'red') advance();
         continue;
       }
       // Everyone else (closedRunner included) plays eyes-closed and sprints
@@ -748,8 +757,12 @@ async function main() {
     fail('shield mover never advanced during red — shield movement must be legal');
   }
   {
+    // (The final timeout gaze petrifies everyone still running — that one
+    // doesn't count against the shield.)
     const sm = medDone.players.find((p) => p[0] === shieldMover);
-    if (sm && sm[3] === 1) fail('shield mover petrified — shield-up is a safe state');
+    if (sm && sm[3] === 1 && medDone.t < 89) {
+      fail('shield mover petrified — shield-up is a safe state');
+    }
   }
   const winner = bots.find((b) => b.slot === medDone.finished[0]);
   if (winner && winner.me?.placement !== 1) {

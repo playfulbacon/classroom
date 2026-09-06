@@ -471,15 +471,29 @@ input {
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8));
 }
 
-.shield-canvas {
+.shield-box {
   position: fixed;
   inset: 0;
-  width: 100%;
-  height: 100%;
   pointer-events: none;
   z-index: 40; /* above the controller HUD, below the eyecam preview */
   opacity: 0;
   transition: opacity 0.35s ease;
+}
+
+.shield-webgl {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* the reflection is horizontally mirrored — the image, never the controls */
+  transform: scaleX(-1);
+}
+
+.shield-rim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .eyecam-cal {

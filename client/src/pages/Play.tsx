@@ -10,7 +10,7 @@ import type {
 } from '../../../shared/protocol';
 import { drawFragment, getRoomImage, groupArtCanvas } from '../art';
 import type { GazeState, GazeTracker } from '../gaze';
-import { drawShield } from '../render/shield';
+import type { ShieldRenderer3D } from '../render/shield3d';
 import { loadCreds, saveCreds, socket } from '../socket';
 
 const JOY_RADIUS = 90; // px of drag for full deflection
@@ -342,49 +342,42 @@ const BUZZ_PATTERNS: Record<BuzzType, number[]> = {
 
 // While Medusa watches, the phone becomes the mirrored bronze shield: the
 // big screen shows only her face, so this little reflection is the player's
-// whole world. Renders whenever fresh 'shield' messages are flowing and
-// fades out when they stop; the TouchSurface stays mounted underneath, so
-// inputs are identical (world-mapped) in both views.
+// whole world. It renders the field with the SAME three.js art and camera
+// as the stage (lazy chunk — loaded only here), horizontally mirrored, and
+// is visible only while her gaze is red; the TouchSurface stays mounted
+// underneath, so inputs are identical (world-mapped) in both views.
 function ShieldOverlay({
   fieldRef,
   shieldRef,
   colorsRef,
+  selfSlot,
 }: {
   fieldRef: React.MutableRefObject<MedusaFieldMsg | null>;
   shieldRef: React.MutableRefObject<{ msg: MedusaShieldMsg; at: number } | null>;
   colorsRef: React.MutableRefObject<Map<number, string>>;
+  selfSlot: number;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    let raf = 0;
-    const loop = () => {
-      raf = requestAnimationFrame(loop);
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const sh = shieldRef.current;
-      const field = fieldRef.current;
-      const fresh = sh && field && performance.now() - sh.at < 800;
-      canvas.style.opacity = fresh ? '1' : '0';
-      if (!fresh) return;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
-      if (w === 0 || h === 0) return;
-      if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-        canvas.width = Math.round(w * dpr);
-        canvas.height = Math.round(h * dpr);
-      }
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.fillStyle = 'rgb(9, 6, 3)';
-      ctx.fillRect(0, 0, w, h);
-      drawShield(ctx, w, h, { field, msg: sh.msg, colors: colorsRef.current }, performance.now() / 1000);
+    let disposed = false;
+    let renderer: ShieldRenderer3D | null = null;
+    void (async () => {
+      const mod = await import('../render/shield3d');
+      if (disposed || !boxRef.current) return;
+      renderer = mod.createShieldRenderer({
+        field: () => fieldRef.current,
+        shield: () => shieldRef.current,
+        colors: () => colorsRef.current,
+        selfSlot: () => selfSlot,
+      });
+      renderer.mount(boxRef.current);
+    })();
+    return () => {
+      disposed = true;
+      renderer?.dispose();
     };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, [fieldRef, shieldRef, colorsRef]);
-  return <canvas ref={canvasRef} className="shield-canvas" />;
+  }, [fieldRef, shieldRef, colorsRef, selfSlot]);
+  return <div ref={boxRef} className="shield-box" />;
 }
 
 export function Play() {
@@ -705,7 +698,12 @@ export function Play() {
           onHold={() => sendInput({ t: 'ping' })}
         />
         {me.eyeMode && (
-          <ShieldOverlay fieldRef={fieldRef} shieldRef={shieldRef} colorsRef={colorsRef} />
+          <ShieldOverlay
+            fieldRef={fieldRef}
+            shieldRef={shieldRef}
+            colorsRef={colorsRef}
+            selfSlot={me.playerId}
+          />
         )}
         {me.eyeMode && <MedusaGazeCam />}
         <div className="controller-hud">

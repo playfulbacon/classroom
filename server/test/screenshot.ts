@@ -276,6 +276,12 @@ async function main() {
   }
   await sleep(1800); // past the fairness grace — tiers rise, strip populates
   await page.screenshot({ path: path.join(OUT_DIR, '6-medusa-face.png') });
+  // The shield is a lazy 3D chunk — make sure it mounted before capturing.
+  await phone
+    .locator('.shield-box canvas')
+    .first()
+    .waitFor({ timeout: 5000 })
+    .catch(() => {});
   await phone.screenshot({ path: path.join(OUT_DIR, '7-phone-shield.png') });
   clearInterval(v2driver);
   console.log('medusa v2 captured');
