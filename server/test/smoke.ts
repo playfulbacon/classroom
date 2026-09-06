@@ -11,6 +11,7 @@ import { io, type Socket } from 'socket.io-client';
 import type {
   JoinResponse,
   LosSnapshot,
+  MedusaSnapshot,
   MeState,
   PuzzleSnapshot,
   RoomState,
@@ -462,6 +463,117 @@ async function main() {
   );
   console.log('art: upload/serve/assign/remove OK');
 
+  // ==========================================================================
+  // Game 3: Medusa
+  // ==========================================================================
+  stage.emit('host:start', { game: 'medusa' });
+  await waitFor('medusa play phase', 8000, () =>
+    latestSnapshot?.kind === 'medusa' && latestSnapshot.phase === 'play' ? true : null,
+  );
+  const med0 = latestSnapshot as unknown as MedusaSnapshot;
+  console.log(`medusa: field ${med0.length}x${med0.lanes} with ${med0.pits.length} pits`);
+  const pitSet = new Set(med0.pits.map(([c, l]) => l * 1000 + c));
+  const isPit = (c: number, l: number) => pitSet.has(l * 1000 + c);
+  const victim = bots[0].slot; // taps blindly through red → statue
+  const faller = bots[1].slot; // steered into the nearest pit
+
+  let driverTick = 0;
+  const medusaDriver = setInterval(() => {
+    driverTick++;
+    const s = latestSnapshot as MedusaSnapshot | null;
+    if (!s || s.kind !== 'medusa' || s.phase !== 'play') return;
+    const pos = new Map(s.players.map((p) => [p[0], p] as const));
+    const green = s.gaze.state === 'green';
+    const dodge = (col: number, lane: number): 'f' | 'l' | 'r' | 'b' => {
+      if (!isPit(col + 1, lane)) return 'f';
+      if (lane + 1 < s.lanes && !isPit(col, lane + 1) && !isPit(col + 1, lane + 1)) return 'r';
+      if (lane - 1 >= 0 && !isPit(col, lane - 1) && !isPit(col + 1, lane - 1)) return 'l';
+      return 'b';
+    };
+    for (const bot of bots) {
+      const p = pos.get(bot.slot);
+      if (!p || p[3] !== 0) continue;
+      const [, col, lane] = p;
+      if (bot.slot === victim) {
+        // Dodges pits but ignores the gaze entirely, at a jog — guaranteed to
+        // still be mid-field when red catches a hop.
+        if (driverTick % 3 === 0) bot.socket.emit('input', { t: 'hop', d: dodge(col, lane) });
+        continue;
+      }
+      if (!green) continue;
+      if (bot.slot === faller) {
+        let best: [number, number] | null = null;
+        let bestD = Infinity;
+        for (const [c, l] of s.pits) {
+          if (c < col) continue;
+          const d = c - col + Math.abs(l - lane);
+          if (d < bestD) {
+            bestD = d;
+            best = [c, l];
+          }
+        }
+        if (best && best[1] !== lane) {
+          bot.socket.emit('input', { t: 'hop', d: best[1] < lane ? 'l' : 'r' });
+        } else {
+          bot.socket.emit('input', { t: 'hop', d: 'f' });
+        }
+        continue;
+      }
+      // Safe runner: sprint on green, dodge pits.
+      bot.socket.emit('input', { t: 'hop', d: dodge(col, lane) });
+    }
+  }, 130);
+
+  await waitFor('runners to make progress', 20000, () => {
+    const s = latestSnapshot as MedusaSnapshot | null;
+    if (!s || s.kind !== 'medusa') return null;
+    return s.players.some((p) => p[1] >= 5) ? true : null;
+  });
+  const statueBot = await waitFor('the reckless tapper to petrify', 30000, () => {
+    const s = latestSnapshot as MedusaSnapshot | null;
+    if (!s || s.kind !== 'medusa') return null;
+    const p = s.players.find((q) => q[0] === victim);
+    return p && p[3] === 1 ? bots[0] : null;
+  });
+  await waitFor("the statue's phone to learn its fate", 5000, () =>
+    statueBot.me?.medusaState === 'stone' ? true : null,
+  );
+  await waitFor('the pit-seeker to fall in', 45000, () => {
+    const s = latestSnapshot as MedusaSnapshot | null;
+    if (!s || s.kind !== 'medusa') return null;
+    const p = s.players.find((q) => q[0] === faller);
+    return p && p[3] === 3 ? true : null;
+  });
+  const fallerState = () => bots[1].me?.medusaState;
+  if (fallerState() !== 'fallen') {
+    await sleep(500);
+    if (fallerState() !== 'fallen') fail('faller phone state wrong');
+  }
+  const medDone = await waitFor('most runners to finish', 95000, () => {
+    const s = latestSnapshot as MedusaSnapshot | null;
+    if (!s || s.kind !== 'medusa') return null;
+    return s.finished.length >= 6 || s.phase === 'over' ? s : null;
+  });
+  clearInterval(medusaDriver);
+  if (medDone.finished.length < 6) {
+    fail(`only ${medDone.finished.length} finished a runnable field`);
+  }
+  if (new Set(medDone.finished).size !== medDone.finished.length) {
+    fail('medusa placements contain duplicates');
+  }
+  const winner = bots.find((b) => b.slot === medDone.finished[0]);
+  if (winner && winner.me?.placement !== 1) {
+    await sleep(400);
+    if (winner.me?.placement !== 1) fail('winner phone did not get placement 1');
+  }
+  console.log(
+    `medusa: ${medDone.finished.length} escaped, statue + pit-fall confirmed, winner slot ${medDone.finished[0]}`,
+  );
+  stage.emit('host:lobby');
+  await waitFor('lobby after medusa', 5000, () =>
+    bots.every((b) => b.me?.phase === 'lobby') ? true : null,
+  );
+
   // A room of ONLY fake players must solve Team Puzzles by itself.
   const stage2 = connect();
   let room2: RoomState | null = null;
@@ -500,6 +612,20 @@ async function main() {
   }
   assertGeometry(botPuzzle, '3x2 bots');
   console.log(`bots: solved a bots-only 3x2 puzzle (${botPuzzle.groupCount} groups, 4 phantoms)`);
+
+  // The same bots-only room must run a full Medusa round unaided: bots
+  // sprint on green, freeze on red (mostly), and at least someone escapes.
+  stage2.emit('host:start', { game: 'medusa' });
+  const botMedusa = await waitFor('bots-only medusa round to end', 110000, () => {
+    const s = snap2 as MedusaSnapshot | null;
+    return s?.kind === 'medusa' && s.phase === 'over' ? s : null;
+  });
+  if (botMedusa.finished.length < 1) fail('no bot escaped Medusa in a full round');
+  const botStones = botMedusa.players.filter((p) => p[3] === 1).length;
+  const botFalls = botMedusa.players.filter((p) => p[3] === 3).length;
+  console.log(
+    `bots: medusa round complete — ${botMedusa.finished.length} escaped, ${botStones} statues, ${botFalls} in pits`,
+  );
 
   // ==========================================================================
   // Idle-human regression: bots must not freeze against a player who never

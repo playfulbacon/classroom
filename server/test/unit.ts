@@ -5,6 +5,7 @@
 
 import assert from 'node:assert/strict';
 import type { StageSnapshot } from '../../shared/protocol';
+import { Medusa } from '../src/games/medusa';
 import { TeamPuzzles } from '../src/games/teamPuzzles';
 import type { GameCtx } from '../src/games/types';
 
@@ -248,5 +249,136 @@ console.log('unit: 3x2 snap detection OK');
   assert.ok(nox !== p1ox || noy !== p1oy, 'phantom origin actually changed');
 }
 console.log('unit: phantom relocation OK');
+
+// ---------------------------------------------------------------------------
+// Medusa
+// ---------------------------------------------------------------------------
+
+function makeMedusa(playerCount: number) {
+  const buzzes: [number, string][] = [];
+  const ctx: GameCtx = {
+    slots: () =>
+      Array.from({ length: playerCount }, (_, i) => ({
+        slot: i + 1,
+        name: `P${i + 1}`,
+        color: 'red',
+      })),
+    options: { rotation: false, puzzleW: 2, puzzleH: 2 },
+    isBot: () => true,
+    imageIds: () => [],
+    emitStage: () => {},
+    emitMe: () => {},
+    buzz: (slot, type) => buzzes.push([slot, type]),
+  };
+  const game = new Medusa(ctx);
+  game.start();
+  game.dispose(); // stop the interval; we drive ticks by hand
+  const internals = game as any;
+  internals.phase = 'play';
+  return { game, internals, buzzes };
+}
+
+// (a) Every generated field has a pit-free path from start to finish.
+{
+  for (let seed = 0; seed < 30; seed++) {
+    const { internals } = makeMedusa(40);
+    const L = 24;
+    const lanes = internals.lanes as number;
+    const pits = internals.pits as Set<number>;
+    const visited = new Set<number>();
+    const queue: [number, number][] = [];
+    for (let lane = 0; lane < lanes; lane++) {
+      if (!pits.has(lane * L)) {
+        queue.push([0, lane]);
+        visited.add(lane * L);
+      }
+    }
+    let reached = false;
+    while (queue.length > 0 && !reached) {
+      const [col, lane] = queue.shift()!;
+      if (col === L - 1) {
+        reached = true;
+        break;
+      }
+      for (const [dc, dl] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nc = col + dc;
+        const nl = lane + dl;
+        if (nc < 0 || nc >= L || nl < 0 || nl >= lanes) continue;
+        const key = nl * L + nc;
+        if (visited.has(key) || pits.has(key)) continue;
+        visited.add(key);
+        queue.push([nc, nl]);
+      }
+    }
+    assert.ok(reached, `seed ${seed}: no pit-free path to the finish`);
+  }
+}
+console.log('unit: medusa pit fields always solvable OK');
+
+// (b) Gaze fairness: turning safe, early red forgiven, late red petrifies;
+// (c) hop cooldown; (d) pit fall; (e) timeout petrifies stragglers.
+{
+  const { game, internals } = makeMedusa(4);
+  const runner = internals.runners.get(1);
+  runner.col = 5;
+  runner.lane = 3;
+  internals.pits.delete(3 * 24 + 6); // ensure forward cell isn't a pit
+  internals.t = 10;
+
+  // turning is safe
+  internals.gaze = 'turning';
+  game.input(1, { t: 'hop', d: 'f' });
+  assert.equal(runner.col, 6, 'hop during turning should move');
+  assert.equal(runner.state, 0, 'turning must be safe');
+
+  // cooldown: immediate second hop ignored
+  game.input(1, { t: 'hop', d: 'f' });
+  assert.equal(runner.col, 6, 'hop inside cooldown must be ignored');
+
+  // early red is forgiven (grace)
+  internals.t = 11;
+  internals.gaze = 'red';
+  internals.redSince = 11 - 0.2;
+  internals.pits.delete(3 * 24 + 7);
+  game.input(1, { t: 'hop', d: 'f' });
+  assert.equal(runner.col, 7, 'hop 200ms into red is forgiven');
+  assert.equal(runner.state, 0);
+
+  // late red petrifies in place
+  internals.t = 12;
+  internals.redSince = 12 - 0.5;
+  game.input(1, { t: 'hop', d: 'f' });
+  assert.equal(runner.state, 1, 'hop 500ms into red petrifies');
+  assert.equal(runner.col, 7, 'petrified where they stood — the hop never lands');
+
+  // pit fall
+  const r2 = internals.runners.get(2);
+  r2.col = 5;
+  r2.lane = 2;
+  internals.pits.add(2 * 24 + 6);
+  internals.t = 13;
+  internals.gaze = 'green';
+  game.input(2, { t: 'hop', d: 'f' });
+  assert.equal(r2.state, 3, 'hopping into a pit means falling in');
+
+  // finishing
+  const r3 = internals.runners.get(3);
+  r3.col = 22;
+  r3.lane = 4;
+  internals.pits.delete(4 * 24 + 23);
+  internals.t = 14;
+  game.input(3, { t: 'hop', d: 'f' });
+  assert.equal(r3.state, 2, 'reaching the last column finishes');
+  assert.deepEqual(internals.finished, [3]);
+  assert.equal((game.personal(3) as any).placement, 1);
+
+  // timeout: the final gaze petrifies everyone still running
+  internals.t = internals.gazeUntil = 89.99;
+  internals.tick(0.05);
+  const r4 = internals.runners.get(4);
+  assert.equal(r4.state, 1, 'timeout petrifies stragglers');
+  assert.equal(internals.phase, 'over');
+}
+console.log('unit: medusa gaze/cooldown/pits/timeout OK');
 
 console.log('\nUNIT PASS ✅');

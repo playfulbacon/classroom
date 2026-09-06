@@ -12,11 +12,19 @@ interface TouchHandlers {
   onRelease?: () => void;
   onFlick?: (x: number, y: number) => void;
   onTap?: () => void;
+  onHold?: () => void; // long-press without moving (~450ms)
   onTouchState?: (down: boolean) => void;
 }
 
 /** Full-screen control surface: drag = joystick, quick swipe = flick, tap = tap. */
-function TouchSurface({ onVector, onRelease, onFlick, onTap, onTouchState }: TouchHandlers) {
+function TouchSurface({
+  onVector,
+  onRelease,
+  onFlick,
+  onTap,
+  onHold,
+  onTouchState,
+}: TouchHandlers) {
   const originEl = useRef<HTMLDivElement>(null);
   const dotEl = useRef<HTMLDivElement>(null);
   const state = useRef({
@@ -28,6 +36,8 @@ function TouchSurface({ onVector, onRelease, onFlick, onTap, onTouchState }: Tou
     t0: 0,
     maxDist: 0,
     lastEmit: 0,
+    holdTimer: 0 as ReturnType<typeof setTimeout> | 0,
+    holdFired: false,
   });
 
   const showAt = (el: HTMLDivElement | null, x: number, y: number) => {
@@ -66,6 +76,15 @@ function TouchSurface({ onVector, onRelease, onFlick, onTap, onTouchState }: Tou
     s.t0 = performance.now();
     s.maxDist = 0;
     s.lastEmit = 0;
+    s.holdFired = false;
+    if (onHold) {
+      s.holdTimer = setTimeout(() => {
+        if (s.pointerId !== -1 && s.maxDist < 12) {
+          s.holdFired = true;
+          onHold();
+        }
+      }, 450);
+    }
     showAt(originEl.current, s.ox, s.oy);
     showAt(dotEl.current, s.ox, s.oy);
     onTouchState?.(true);
@@ -92,15 +111,19 @@ function TouchSurface({ onVector, onRelease, onFlick, onTap, onTouchState }: Tou
     const s = state.current;
     if (e.pointerId !== s.pointerId) return;
     s.pointerId = -1;
+    if (s.holdTimer) clearTimeout(s.holdTimer);
+    s.holdTimer = 0;
     hide();
     const dt = performance.now() - s.t0;
     const dx = s.lastX - s.ox;
     const dy = s.lastY - s.oy;
     const dist = Math.hypot(dx, dy);
-    if (dt < 250 && dist > 55) {
-      onFlick?.(dx / dist, dy / dist);
-    } else if (dt < 300 && s.maxDist < 12) {
-      onTap?.();
+    if (!s.holdFired) {
+      if (dt < 250 && dist > 55) {
+        onFlick?.(dx / dist, dy / dist);
+      } else if (dt < 300 && s.maxDist < 12) {
+        onTap?.();
+      }
     }
     onRelease?.();
     onTouchState?.(false);
@@ -411,6 +434,70 @@ export function Play() {
           <div className="hint">
             Swipe &amp; hold to slide{me.rotationEnabled ? ' · tap to rotate' : ''}
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------- Medusa
+  if (me.game === 'medusa') {
+    const st = me.medusaState ?? 'running';
+    if (st === 'stone') {
+      return (
+        <div className="status-screen" style={{ background: '#3a3a44' }}>
+          {reconnectBanner}
+          <div className="big-num">{num}</div>
+          <h2>🗿 Petrified!</h2>
+          <div className="sub">Medusa saw you move. You&apos;re part of the garden now.</div>
+        </div>
+      );
+    }
+    if (st === 'fallen') {
+      return (
+        <div className="status-screen" style={{ background: '#241a12' }}>
+          {reconnectBanner}
+          <div className="big-num">{num}</div>
+          <h2>🕳 You fell in a pit!</h2>
+          <div className="sub">Watch the big screen — better luck next round.</div>
+        </div>
+      );
+    }
+    if (st === 'finished') {
+      return (
+        <div className="status-screen" style={{ background: '#245c36' }}>
+          {reconnectBanner}
+          <div className="big-num">{num}</div>
+          <h2>🏁 You escaped!</h2>
+          <div className="sub">{me.placement ? `Finished #${me.placement}.` : ''} Watch the rest!</div>
+        </div>
+      );
+    }
+    const progress = Math.min(
+      1,
+      (me.col ?? 0) / Math.max(1, (me.fieldLength ?? 24) - 1),
+    );
+    return (
+      <div className="controller" style={{ background: `color-mix(in srgb, ${tint} 30%, #0f1220)` }}>
+        {reconnectBanner}
+        <TouchSurface
+          onTap={() => sendInput({ t: 'hop', d: 'f' })}
+          onFlick={(x, y) => {
+            const d = Math.abs(y) >= Math.abs(x) ? (y < 0 ? 'f' : 'b') : x < 0 ? 'l' : 'r';
+            sendInput({ t: 'hop', d });
+          }}
+          onHold={() => sendInput({ t: 'ping' })}
+        />
+        <div className="controller-hud">
+          <div className="big-num" style={{ opacity: 0.25 }}>{num}</div>
+          <div className="hint">
+            TAP to run · swipe to dodge pits · watch the big screen — FREEZE when she turns!
+          </div>
+          <div className="hint" style={{ opacity: 0.7 }}>
+            Press &amp; hold to make your runner wave 👋
+          </div>
+        </div>
+        <div className="progress-track">
+          <div className="progress-fill" style={{ width: `${progress * 100}%`, background: tint }} />
         </div>
       </div>
     );

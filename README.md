@@ -36,6 +36,22 @@ and a tap rotates your piece.
   the team assembles around. If another team ever locks its puzzle on top of
   a phantom's assembly area, the phantoms slide to a fresh spot.
 
+### 🐍 Medusa
+Red light, green light — with Crossy Road controls, rendered in real 3D on
+the big screen. Tap to hop toward Medusa at the far end of a pit-riddled
+field; swipe to dodge the pits (or hop back). When she turns — audible
+warning, then those eyes — any hop turns you to stone where you stand, and
+your statue stays on the field. A grace window forgives taps that were
+already in flight on slow wi-fi. Reach her pedestal before the 90-second
+timer runs out; at time-up her final gaze petrifies everyone still on the
+field. Long-press your phone to make your runner beacon on the big screen
+("find me"). The stage uses an isometric three.js scene (code-split — only
+the stage downloads it, only when a Medusa round starts) with a dynamic
+camera that pans and zooms to keep the whole pack in frame, plus
+synthesized sound cues. Drop a `medusa.glb` into `client/public/models/`
+to replace the built-in procedural head with your own model (see the
+README there).
+
 ## Quick start
 
 ```bash

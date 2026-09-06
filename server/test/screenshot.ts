@@ -8,7 +8,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { io, type Socket } from 'socket.io-client';
-import type { PuzzleSnapshot, StageSnapshot } from '../../shared/protocol';
+import type { MedusaSnapshot, PuzzleSnapshot, StageSnapshot } from '../../shared/protocol';
 
 const PORT = 4200;
 const BASE = `http://localhost:${PORT}`;
@@ -191,6 +191,43 @@ async function main() {
   await page.screenshot({ path: path.join(OUT_DIR, '3-team-puzzles.png') });
   clearInterval(solver);
   console.log('puzzle captured');
+
+  // --- Medusa ---
+  await page.click('.host-corner button:has-text("Lobby")');
+  await sleep(400);
+  await page.click('button.start-medusa');
+  // Socket players sprint on green and dodge pits so the field spreads out.
+  const medusaDriver = setInterval(() => {
+    const s = latest as MedusaSnapshot | null;
+    if (!s || s.kind !== 'medusa' || s.phase !== 'play' || s.gaze.state !== 'green') return;
+    const pit = new Set(s.pits.map(([c, l]) => l * 1000 + c));
+    const isPit = (c: number, l: number) => pit.has(l * 1000 + c);
+    const pos = new Map(s.players.map((p) => [p[0], p] as const));
+    for (const bot of bots) {
+      const p = pos.get(bot.slot);
+      if (!p || p[3] !== 0 || Math.random() < 0.35) continue;
+      const [, col, lane] = p;
+      if (!isPit(col + 1, lane)) bot.socket.emit('input', { t: 'hop', d: 'f' });
+      else if (lane + 1 < s.lanes && !isPit(col, lane + 1)) {
+        bot.socket.emit('input', { t: 'hop', d: 'r' });
+      } else if (lane - 1 >= 0 && !isPit(col, lane - 1)) {
+        bot.socket.emit('input', { t: 'hop', d: 'l' });
+      }
+    }
+  }, 160);
+  await sleep(8000); // chunk load + countdown + some green running
+  await page.screenshot({ path: path.join(OUT_DIR, '4-medusa.png') });
+  // Catch a red moment.
+  const redAt = Date.now();
+  while (Date.now() - redAt < 20000) {
+    const s = latest as MedusaSnapshot | null;
+    if (s?.kind === 'medusa' && s.gaze.state === 'red') break;
+    await sleep(150);
+  }
+  await sleep(500); // head finishes snapping around, tint fades in
+  await page.screenshot({ path: path.join(OUT_DIR, '5-medusa-red.png') });
+  clearInterval(medusaDriver);
+  console.log('medusa captured');
 
   await browser.close();
   for (const s of sockets) s.disconnect();

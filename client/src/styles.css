@@ -394,6 +394,33 @@ input {
   background: #30a46c;
 }
 
+.host-bar .start-medusa {
+  background: #7c5cff;
+}
+
+.medusa-box {
+  position: absolute;
+  inset: 0;
+}
+
+.progress-track {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(14px + env(safe-area-inset-bottom));
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+
 .host-bar .neutral {
   background: #2a3155;
 }

@@ -18,6 +18,7 @@ import {
 } from '../../shared/protocol';
 import type { GameCtx, GameModule } from './games/types';
 import { LastOneStanding } from './games/lastOneStanding';
+import { Medusa } from './games/medusa';
 import { TeamPuzzles } from './games/teamPuzzles';
 
 interface Player {
@@ -161,7 +162,7 @@ export class Room {
     const isNew = !player;
     if (!player) {
       if (this.players.size >= MAX_PLAYERS) {
-        return { ok: false, err: 'Room is full (70 players max)' };
+        return { ok: false, err: `Room is full (${MAX_PLAYERS} players max)` };
       }
       const slot = this.nextSlot++;
       player = {
@@ -272,7 +273,7 @@ export class Room {
 
   startGame(socket: Socket, gameId: unknown, options: unknown) {
     if (!socket.data.stage) return;
-    if (gameId !== 'los' && gameId !== 'puzzle') return;
+    if (gameId !== 'los' && gameId !== 'puzzle' && gameId !== 'medusa') return;
     if (this.bySlot.size === 0) return;
     this.touch();
     this.stopGame();
@@ -280,7 +281,12 @@ export class Room {
     this.gameId = gameId;
     this.phase = 'playing';
     const ctx = this.makeCtx();
-    this.game = gameId === 'los' ? new LastOneStanding(ctx) : new TeamPuzzles(ctx);
+    this.game =
+      gameId === 'los'
+        ? new LastOneStanding(ctx)
+        : gameId === 'puzzle'
+          ? new TeamPuzzles(ctx)
+          : new Medusa(ctx);
     this.broadcastRoom();
     this.game.start();
     this.startBotTicker();

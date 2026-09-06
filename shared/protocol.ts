@@ -1,7 +1,7 @@
 // Shared message + state types for Classroom Arcade.
 // Imported by both the server and the client.
 
-export type GameId = 'los' | 'puzzle';
+export type GameId = 'los' | 'puzzle' | 'medusa';
 
 export type RoomPhase = 'lobby' | 'playing';
 
@@ -108,7 +108,43 @@ export interface PuzzleSnapshot {
   finished: number[];
 }
 
-export type StageSnapshot = LosSnapshot | PuzzleSnapshot;
+// ---------------------------------------------------------------------------
+// Medusa (red light, green light)
+// ---------------------------------------------------------------------------
+
+export type MedusaGazeState = 'green' | 'turning' | 'red' | 'returning';
+
+// Player states in the snapshot tuple
+export const MEDUSA_RUNNING = 0;
+export const MEDUSA_STONE = 1;
+export const MEDUSA_FINISHED = 2;
+export const MEDUSA_FALLEN = 3;
+
+// [slot, col, lane, state] — col 0 = start edge (left), col length-1 = the
+// finish column at Medusa's feet (right); lane = depth position on screen.
+export type MedusaPlayerTuple = [number, number, number, number];
+
+export interface MedusaSnapshot {
+  kind: 'medusa';
+  phase: GamePhase;
+  countdown: number;
+  t: number; // seconds since play began
+  timeLimit: number;
+  length: number; // columns along the race axis
+  lanes: number;
+  pits: [number, number][]; // [col, lane]
+  gaze: {
+    state: MedusaGazeState;
+    tLeft: number; // seconds remaining in this gaze state
+  };
+  players: MedusaPlayerTuple[];
+  // slots that pinged "find me" since the previous snapshot (beacon cue)
+  pings: number[];
+  finished: number[]; // slots in finishing order
+  aliveCount: number;
+}
+
+export type StageSnapshot = LosSnapshot | PuzzleSnapshot | MedusaSnapshot;
 
 // ---------------------------------------------------------------------------
 // Personal state pushed to each phone ('me' event)
@@ -132,6 +168,10 @@ export interface MeState {
   imageId?: string | null; // uploaded picture for this team, null = procedural
   rotationEnabled?: boolean;
   teamRank?: number; // 1-based finish position once the team locks
+  // Medusa
+  medusaState?: 'running' | 'stone' | 'finished' | 'fallen';
+  col?: number; // current progress column
+  fieldLength?: number;
 }
 
 export type BuzzType = 'bumped' | 'eliminated' | 'locked' | 'go';
@@ -166,7 +206,9 @@ export type InputPayload =
   | { t: 'dash'; x: number; y: number } // LOS: flick dash, unit direction
   | { t: 'dir'; x: number; y: number } // Puzzle: held movement vector
   | { t: 'rot' } // Puzzle: tap to rotate
-  | { t: 'touch'; down: boolean }; // Puzzle: finger on/off (drives glow)
+  | { t: 'touch'; down: boolean } // Puzzle: finger on/off (drives glow)
+  | { t: 'hop'; d: 'f' | 'l' | 'r' | 'b' } // Medusa: hop forward/left/right/back
+  | { t: 'ping' }; // Medusa: cosmetic "find me" beacon (always safe)
 
 export interface HostStartRequest {
   game: GameId;
@@ -189,7 +231,7 @@ export interface HostStartRequest {
 //  'host:art:remove' ({id: string}) — stage only
 //  'input'        (InputPayload)
 
-export const MAX_PLAYERS = 70;
+export const MAX_PLAYERS = 100;
 export const MIN_PUZZLE_DIM = 1;
 export const MAX_PUZZLE_DIM = 5;
 export const MAX_ROOM_IMAGES = 20;
