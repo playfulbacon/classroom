@@ -106,3 +106,37 @@ export function gong() {
   tone({ freq: 196, dur: 1.1, type: 'sine', gain: 0.15 });
   tone({ freq: 392, dur: 0.8, type: 'sine', gain: 0.07, at: 0.05 });
 }
+
+// Continuous snake hiss whose loudness follows danger (v2 red light).
+// Call every frame with level 0..1; 0 fades it to silence. One shared
+// looping noise source, lazily created.
+let hissAmp: GainNode | null = null;
+let hissCtx: AudioContext | null = null;
+
+export function hiss(level: number) {
+  const ac = ready();
+  if (!ac) return;
+  if (hissCtx !== ac) {
+    // (Re)build after an unlock created a fresh context.
+    hissCtx = ac;
+    const len = Math.floor(ac.sampleRate * 1.5);
+    const buf = ac.createBuffer(1, len, ac.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const src = ac.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const filter = ac.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 5200; // sibilant "sss"
+    filter.Q.value = 0.8;
+    hissAmp = ac.createGain();
+    hissAmp.gain.value = 0;
+    src.connect(filter).connect(hissAmp).connect(ac.destination);
+    src.start();
+  }
+  if (hissAmp) {
+    const target = Math.max(0, Math.min(1, level)) * 0.09;
+    hissAmp.gain.setTargetAtTime(target, ac.currentTime, 0.12);
+  }
+}

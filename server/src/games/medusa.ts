@@ -14,6 +14,7 @@ import {
   type MedusaGazeState,
   type MedusaPlatformTuple,
   type MedusaPlayerTuple,
+  type MedusaShieldMsg,
   type MedusaSnapshot,
   type MeState,
 } from '../../../shared/protocol';
@@ -52,6 +53,8 @@ const SHIELD_SLOW = 2.5; // extra cooldown mult while navigating by shield in re
 const CONE_HALF = Math.PI / 4; // half-angle of her gaze cone
 const SWEEP_PERIOD = 3.2; // seconds per full sweep oscillation
 const OCCL_BUCKET = Math.PI / 90; // 2° statue-shadow buckets
+const SHIELD_EVERY = 4; // shield stream every 4th tick (5 Hz)
+const SHIELD_RADIUS = 3; // Chebyshev window the shield can see
 
 type PlayerState =
   | typeof MEDUSA_RUNNING
@@ -123,6 +126,7 @@ export class Medusa implements GameModule {
   private shadow: Float64Array | null = null;
   private shadowDirty = true;
   private sweepMax = 0.6; // sweep amplitude, set from field geometry in start()
+  private tickCount = 0;
 
   constructor(ctx: GameCtx) {
     this.ctx = ctx;
@@ -688,7 +692,16 @@ export class Medusa implements GameModule {
     }
 
     // v2 eye mode: the gaze meter does the petrifying, continuously.
-    if (this.ctx.options.medusaEyes) this.updateMeters(dt);
+    if (this.ctx.options.medusaEyes) {
+      this.updateMeters(dt);
+      // The big screen shows only her face during red — stream each phone
+      // its little shield window (starting at turning, so the bronze fades
+      // in during the telegraph).
+      this.tickCount++;
+      if (this.gaze !== 'green' && this.tickCount % SHIELD_EVERY === 0) {
+        this.emitShields();
+      }
+    }
 
     // Time up: her final gaze sweeps the whole field.
     if (this.t >= TIME_LIMIT) {
@@ -704,6 +717,55 @@ export class Medusa implements GameModule {
     }
 
     this.emitSnapshot();
+  }
+
+  // Per-phone shield windows: own state + everything within a small
+  // Chebyshev radius. Tiny and personal — full snapshots never go to phones.
+  private emitShields() {
+    const gazeCode =
+      this.gaze === 'green' ? 0 : this.gaze === 'turning' ? 1 : this.gaze === 'red' ? 2 : 3;
+    const dir = round2(this.sweepDir());
+    const tLeft = round1(Math.max(0, this.gazeUntil - this.t));
+    for (const r of this.runners.values()) {
+      if (r.state !== MEDUSA_RUNNING || this.ctx.isBot(r.slot)) continue;
+      const near: MedusaShieldMsg['near'] = [];
+      for (const o of this.runners.values()) {
+        if (o.slot === r.slot || o.state === MEDUSA_FINISHED) continue;
+        if (
+          Math.abs(o.col - r.col) <= SHIELD_RADIUS &&
+          Math.abs(o.lane - r.lane) <= SHIELD_RADIUS
+        ) {
+          near.push([o.slot, o.col, o.lane, o.state, o.tier]);
+        }
+      }
+      const pf: MedusaShieldMsg['pf'] = [];
+      for (const p of this.platforms) {
+        if (
+          Math.abs(p.lane - r.lane) <= SHIELD_RADIUS &&
+          p.c1 >= r.col - SHIELD_RADIUS &&
+          p.c0 <= r.col + SHIELD_RADIUS
+        ) {
+          pf.push([p.id, round2(p.pos)]);
+        }
+      }
+      const cr: MedusaShieldMsg['cr'] = [];
+      for (const [k, stage] of this.crumbleStage) {
+        if (stage === 0) continue;
+        const c = k % LENGTH;
+        const l = Math.floor(k / LENGTH);
+        if (Math.abs(c - r.col) <= SHIELD_RADIUS && Math.abs(l - r.lane) <= SHIELD_RADIUS) {
+          cr.push([c, l, stage]);
+        }
+      }
+      const msg: MedusaShieldMsg = {
+        g: [gazeCode, dir, tLeft],
+        me: [r.col, r.lane, Math.round(r.meter * 100), r.tier, r.eff],
+        near,
+        pf,
+        cr,
+      };
+      this.ctx.send(r.slot, 'shield', msg);
+    }
   }
 
   private emitSnapshot() {

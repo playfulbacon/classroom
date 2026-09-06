@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { BuzzType, JoinResponse, MeState, RoomState } from '../../../shared/protocol';
+import type {
+  BuzzType,
+  JoinResponse,
+  MedusaFieldMsg,
+  MedusaShieldMsg,
+  MeState,
+  RoomState,
+} from '../../../shared/protocol';
 import { drawFragment, getRoomImage, groupArtCanvas } from '../art';
 import type { GazeState, GazeTracker } from '../gaze';
+import { drawShield } from '../render/shield';
 import { loadCreds, saveCreds, socket } from '../socket';
 
 const JOY_RADIUS = 90; // px of drag for full deflection
@@ -332,10 +340,62 @@ const BUZZ_PATTERNS: Record<BuzzType, number[]> = {
   creep: [70, 40, 70], // the stone crept up a tier
 };
 
+// While Medusa watches, the phone becomes the mirrored bronze shield: the
+// big screen shows only her face, so this little reflection is the player's
+// whole world. Renders whenever fresh 'shield' messages are flowing and
+// fades out when they stop; the TouchSurface stays mounted underneath, so
+// inputs are identical (world-mapped) in both views.
+function ShieldOverlay({
+  fieldRef,
+  shieldRef,
+  colorsRef,
+}: {
+  fieldRef: React.MutableRefObject<MedusaFieldMsg | null>;
+  shieldRef: React.MutableRefObject<{ msg: MedusaShieldMsg; at: number } | null>;
+  colorsRef: React.MutableRefObject<Map<number, string>>;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    let raf = 0;
+    const loop = () => {
+      raf = requestAnimationFrame(loop);
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const sh = shieldRef.current;
+      const field = fieldRef.current;
+      const fresh = sh && field && performance.now() - sh.at < 800;
+      canvas.style.opacity = fresh ? '1' : '0';
+      if (!fresh) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      if (w === 0 || h === 0) return;
+      if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+      }
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = 'rgb(9, 6, 3)';
+      ctx.fillRect(0, 0, w, h);
+      drawShield(ctx, w, h, { field, msg: sh.msg, colors: colorsRef.current }, performance.now() / 1000);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [fieldRef, shieldRef, colorsRef]);
+  return <canvas ref={canvasRef} className="shield-canvas" />;
+}
+
 export function Play() {
   const navigate = useNavigate();
   const [me, setMe] = useState<MeState | null>(null);
   const [room, setRoom] = useState<RoomState | null>(null);
+  // Medusa shield-view plumbing (refs — the canvas loop reads them directly).
+  const fieldRef = useRef<MedusaFieldMsg | null>(null);
+  const shieldRef = useRef<{ msg: MedusaShieldMsg; at: number } | null>(null);
+  const colorsRef = useRef(new Map<number, string>());
+  const lastMeterRef = useRef(0);
   const [connected, setConnected] = useState(socket.connected);
   const [joinError, setJoinError] = useState('');
 
@@ -371,11 +431,32 @@ export function Play() {
         // vibration is a nice-to-have
       }
     };
+    const onField = (msg: MedusaFieldMsg) => {
+      fieldRef.current = msg;
+      shieldRef.current = null;
+      lastMeterRef.current = 0;
+    };
+    const onShield = (msg: MedusaShieldMsg) => {
+      shieldRef.current = { msg, at: performance.now() };
+      // Escalating warning as the meter climbs: vibration at each threshold.
+      const q = msg.me[2];
+      const prev = lastMeterRef.current;
+      lastMeterRef.current = q;
+      try {
+        if (prev < 90 && q >= 90) navigator.vibrate?.([120, 60, 120]);
+        else if (prev < 70 && q >= 70) navigator.vibrate?.([90]);
+        else if (prev < 40 && q >= 40) navigator.vibrate?.([50]);
+      } catch {
+        // vibration is a nice-to-have
+      }
+    };
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.on('me', setMe);
     socket.on('room', setRoom);
     socket.on('buzz', onBuzz);
+    socket.on('field', onField);
+    socket.on('shield', onShield);
     if (socket.connected) doJoin();
     return () => {
       socket.off('connect', onConnect);
@@ -383,8 +464,17 @@ export function Play() {
       socket.off('me', setMe);
       socket.off('room', setRoom);
       socket.off('buzz', onBuzz);
+      socket.off('field', onField);
+      socket.off('shield', onShield);
     };
   }, [navigate]);
+
+  // Slot → color for the shield view's neighbor dots.
+  useEffect(() => {
+    const map = new Map<number, string>();
+    if (room) for (const p of room.players) map.set(p.id, p.color);
+    colorsRef.current = map;
+  }, [room]);
 
   // Keep the phone screen awake during play.
   useEffect(() => {
@@ -614,6 +704,9 @@ export function Play() {
           }}
           onHold={() => sendInput({ t: 'ping' })}
         />
+        {me.eyeMode && (
+          <ShieldOverlay fieldRef={fieldRef} shieldRef={shieldRef} colorsRef={colorsRef} />
+        )}
         {me.eyeMode && <MedusaGazeCam />}
         <div className="controller-hud">
           <div className="big-num" style={{ opacity: 0.25 }}>{num}</div>

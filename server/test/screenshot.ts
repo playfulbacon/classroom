@@ -229,6 +229,58 @@ async function main() {
   clearInterval(medusaDriver);
   console.log('medusa captured');
 
+  // --- Medusa v2 (eye mode): fullscreen face cut + phone shield view ---
+  await page.click('.host-corner button:has-text("Lobby")');
+  await sleep(400);
+  await page.locator('label:has-text("eye mode") input[type=checkbox]').check();
+  await sleep(250);
+  // A phone page for the shield view: reuse a socket player's identity is
+  // not possible (tokens are per-join), so join fresh via stored creds.
+  const phone = await browser.newPage({ viewport: { width: 390, height: 780 } });
+  await phone.goto(`${BASE}/`);
+  await phone.evaluate(
+    ([c]) => localStorage.setItem('ca-creds', JSON.stringify({ code: c, name: 'Perseus' })),
+    [code],
+  );
+  await phone.goto(`${BASE}/play`);
+  await sleep(600);
+  await page.click('button.start-medusa');
+  // Decline the camera on the phone (headless has none) — the shield must
+  // still render from the server's shield stream.
+  await phone.locator('.eyecam-consent button.no').click({ timeout: 8000 }).catch(() => {});
+  const v2driver = setInterval(() => {
+    const s = latest as MedusaSnapshot | null;
+    if (!s || s.kind !== 'medusa' || s.phase !== 'play') return;
+    const pit = new Set(s.pits.map(([c, l]) => l * 1000 + c));
+    const pos = new Map(s.players.map((p) => [p[0], p] as const));
+    bots.forEach((bot, i) => {
+      const p = pos.get(bot.slot);
+      if (!p || p[3] !== 0) return;
+      if (i < 3) {
+        // a few players get caught staring — feeds the endangered strip
+        bot.socket.emit('input', { t: 'gaze', s: 2, c: 0.9 });
+        return;
+      }
+      bot.socket.emit('input', { t: 'gaze', s: 1, c: 0.9 });
+      if (Math.random() < 0.35) return;
+      const [, col, lane] = p;
+      if (!pit.has(lane * 1000 + col + 1)) bot.socket.emit('input', { t: 'hop', d: 'f' });
+    });
+  }, 160);
+  await sleep(6000); // countdown + some green
+  const v2redAt = Date.now();
+  while (Date.now() - v2redAt < 25000) {
+    const s = latest as MedusaSnapshot | null;
+    if (s?.kind === 'medusa' && s.gaze.state === 'red' && s.gaze.tLeft > 2.4) break;
+    await sleep(120);
+  }
+  await sleep(1800); // past the fairness grace — tiers rise, strip populates
+  await page.screenshot({ path: path.join(OUT_DIR, '6-medusa-face.png') });
+  await phone.screenshot({ path: path.join(OUT_DIR, '7-phone-shield.png') });
+  clearInterval(v2driver);
+  console.log('medusa v2 captured');
+  await phone.close();
+
   await browser.close();
   for (const s of sockets) s.disconnect();
   killServer();

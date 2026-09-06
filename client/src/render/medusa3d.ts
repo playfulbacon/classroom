@@ -93,6 +93,11 @@ export function createMedusaRenderer(
   let overlay: HTMLCanvasElement | null = null;
   let scene: THREE.Scene | null = null;
   let camera: THREE.OrthographicCamera | null = null;
+  // The v2 red-light cut: a second camera framed on Medusa's face, with the
+  // field and every runner hidden — the projector must leak NO positions.
+  let faceCam: THREE.PerspectiveCamera | null = null;
+  let fieldRoot: THREE.Group | null = null;
+  let actorsRoot: THREE.Group | null = null;
 
   let snap: MedusaSnapshot | null = null;
   let built = false;
@@ -142,7 +147,17 @@ export function createMedusaRenderer(
     scene.background = new THREE.Color(0x10142a);
     scene.fog = new THREE.Fog(0x10142a, 55, 110);
     camera = new THREE.OrthographicCamera(-12, 12, 7, -7, 0.1, 300);
+    faceCam = new THREE.PerspectiveCamera(30, 16 / 9, 0.1, 100);
+    addRoots();
     addLights();
+  }
+
+  function addRoots() {
+    if (!scene) return;
+    fieldRoot = new THREE.Group();
+    actorsRoot = new THREE.Group();
+    scene.add(fieldRoot);
+    scene.add(actorsRoot);
   }
 
   function addLights() {
@@ -158,6 +173,7 @@ export function createMedusaRenderer(
   function resetRound() {
     if (!scene) return;
     scene.clear();
+    addRoots();
     addLights();
     avatars.clear();
     oneShots.length = 0;
@@ -177,7 +193,8 @@ export function createMedusaRenderer(
 
   // ---------------------------------------------------------------- field
   function buildField(s: MedusaSnapshot) {
-    if (!scene) return;
+    if (!scene || !fieldRoot) return;
+    const root = fieldRoot;
     const L = s.length;
     const lanes = s.lanes;
     const cz = (lanes - 1) / 2;
@@ -188,7 +205,7 @@ export function createMedusaRenderer(
     );
     ground.rotation.x = -Math.PI / 2;
     ground.position.set(L / 2 + 1, -0.02, cz);
-    scene.add(ground);
+    root.add(ground);
 
     // Subtle grid over the playable field.
     const grid = new THREE.Group();
@@ -211,7 +228,7 @@ export function createMedusaRenderer(
       ]);
       grid.add(new THREE.Line(g, lineMat));
     }
-    scene.add(grid);
+    root.add(grid);
 
     // Start zone tint + finish strip.
     const startZone = new THREE.Mesh(
@@ -220,14 +237,14 @@ export function createMedusaRenderer(
     );
     startZone.rotation.x = -Math.PI / 2;
     startZone.position.set(0.55, 0.001, cz);
-    scene.add(startZone);
+    root.add(startZone);
     const finish = new THREE.Mesh(
       new THREE.PlaneGeometry(1, lanes),
       new THREE.MeshLambertMaterial({ color: 0xd8b64a, transparent: true, opacity: 0.85 }),
     );
     finish.rotation.x = -Math.PI / 2;
     finish.position.set(L - 1, 0.002, cz);
-    scene.add(finish);
+    root.add(finish);
 
     // Chasm bands (from the ferry routes): one deep gorge slab each instead
     // of per-cell pit squares.
@@ -244,7 +261,7 @@ export function createMedusaRenderer(
       );
       gorge.rotation.x = -Math.PI / 2;
       gorge.position.set((b.c0 + b.c1) / 2, 0.005, cz);
-      scene.add(gorge);
+      root.add(gorge);
       for (const edge of [b.c0 - 0.5, b.c1 + 0.5]) {
         const rim = new THREE.Mesh(
           new THREE.PlaneGeometry(0.12, lanes + 2),
@@ -252,7 +269,7 @@ export function createMedusaRenderer(
         );
         rim.rotation.x = -Math.PI / 2;
         rim.position.set(edge, 0.007, cz);
-        scene.add(rim);
+        root.add(rim);
       }
     }
 
@@ -265,11 +282,11 @@ export function createMedusaRenderer(
       const rim = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 0.95), pitRim);
       rim.rotation.x = -Math.PI / 2;
       rim.position.set(col, 0.004, lane);
-      scene.add(rim);
+      root.add(rim);
       const hole = new THREE.Mesh(new THREE.PlaneGeometry(0.78, 0.78), pitTop);
       hole.rotation.x = -Math.PI / 2;
       hole.position.set(col, 0.006, lane);
-      scene.add(hole);
+      root.add(hole);
     }
 
     // Ferry platforms: bronze slabs shuttling across the gorges.
@@ -279,7 +296,7 @@ export function createMedusaRenderer(
         new THREE.MeshLambertMaterial({ color: 0xa8763e }),
       );
       slab.position.set(pos, 0.09, lane);
-      scene.add(slab);
+      root.add(slab);
       platformMeshes.set(id, slab);
       platformTargets.set(id, pos);
     }
@@ -290,7 +307,7 @@ export function createMedusaRenderer(
       const tile = new THREE.Mesh(new THREE.PlaneGeometry(0.94, 0.94), tileMat);
       tile.rotation.x = -Math.PI / 2;
       tile.position.set(col, 0.005, lane);
-      scene.add(tile);
+      root.add(tile);
       const crackGeo = new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(col - 0.3, 0.012, lane - 0.35),
         new THREE.Vector3(col + 0.1, 0.012, lane + 0.05),
@@ -303,12 +320,12 @@ export function createMedusaRenderer(
         crackGeo,
         new THREE.LineBasicMaterial({ color: 0x2b2517, transparent: true, opacity: 0.5 }),
       );
-      scene.add(cracks);
+      root.add(cracks);
       const hole = new THREE.Mesh(new THREE.PlaneGeometry(0.86, 0.86), pitTop);
       hole.rotation.x = -Math.PI / 2;
       hole.position.set(col, 0.008, lane);
       hole.visible = false;
-      scene.add(hole);
+      root.add(hole);
       const cell: CrumbleCell = { tile, tileMat, cracks, hole, stage: 0 };
       crumbleCells.set(lane * 1000 + col, cell);
       if (stage !== 0) styleCrumble(cell, stage, false);
@@ -466,7 +483,7 @@ export function createMedusaRenderer(
     blindfold.name = 'blindfold';
     blindfold.visible = false;
     group.add(blindfold);
-    scene?.add(group);
+    actorsRoot?.add(group);
     return {
       group,
       bodyMat,
@@ -509,7 +526,7 @@ export function createMedusaRenderer(
   }
 
   function spawnRing(x: number, z: number, color: string) {
-    if (!scene) return;
+    if (!actorsRoot) return;
     const mesh = new THREE.Mesh(
       new THREE.RingGeometry(0.35, 0.5, 24),
       new THREE.MeshBasicMaterial({
@@ -521,7 +538,7 @@ export function createMedusaRenderer(
     );
     mesh.rotation.x = -Math.PI / 2;
     mesh.position.set(x, 0.03, z);
-    scene.add(mesh);
+    actorsRoot.add(mesh);
     oneShots.push({
       mesh,
       start: clockT,
@@ -534,7 +551,7 @@ export function createMedusaRenderer(
   }
 
   function spawnDust(x: number, z: number) {
-    if (!scene) return;
+    if (!actorsRoot) return;
     for (let i = 0; i < 6; i++) {
       const puff = new THREE.Mesh(
         new THREE.SphereGeometry(0.09, 6, 5),
@@ -543,7 +560,7 @@ export function createMedusaRenderer(
       const a = Math.random() * Math.PI * 2;
       const r = 0.15 + Math.random() * 0.25;
       puff.position.set(x, 0.1, z);
-      scene.add(puff);
+      actorsRoot.add(puff);
       const vx = Math.cos(a) * r;
       const vz = Math.sin(a) * r;
       oneShots.push({
@@ -684,8 +701,32 @@ export function createMedusaRenderer(
     updateOneShots();
     updateCamera(s, w / h, dt);
 
-    renderer.render(scene, camera);
-    drawOverlay(s, w, h, dpr);
+    // v2 red light: the projector cuts to her face, fullscreen. The field
+    // and every runner are HIDDEN — all field information exists only on
+    // the phones, so there is nothing to gain by peeking at the big screen.
+    const faceCut =
+      s.eyesMode && s.phase === 'play' && s.gaze.state === 'red' && !!faceCam && !!headGroup;
+    if (fieldRoot) fieldRoot.visible = !faceCut;
+    if (actorsRoot) actorsRoot.visible = !faceCut;
+    if (faceCut && faceCam && headGroup) {
+      const hx = headGroup.position.x;
+      const hz = headGroup.position.z;
+      // Stay in front of the face as her head sweeps: orbit with the yaw.
+      const yaw = (headSpin?.rotation.y ?? 0) * 0.8;
+      const D = 6.4;
+      faceCam.aspect = w / h;
+      faceCam.position.set(
+        hx - Math.cos(yaw) * D,
+        3.2 + Math.sin(clockT * 0.7) * 0.15,
+        hz + Math.sin(yaw) * D + Math.sin(clockT * 0.5) * 0.3,
+      );
+      faceCam.lookAt(hx, 2.5, hz);
+      faceCam.updateProjectionMatrix();
+      renderer.render(scene, faceCam);
+    } else {
+      renderer.render(scene, camera);
+    }
+    drawOverlay(s, w, h, dpr, faceCut);
   }
 
   function updateAvatars(dt: number) {
@@ -741,10 +782,13 @@ export function createMedusaRenderer(
   function updateHead(dt: number) {
     if (!headSpin || !snap) return;
     // Target yaw: PI = facing away (green), 0 = facing the field (red).
+    // During red her head tracks the sweeping gaze — the eyes visibly
+    // swivel across the field (and, in a v2 round, toward whoever is
+    // deepest in trouble).
     const g = snap.gaze;
     let target: number;
     if (g.state === 'green') target = Math.PI;
-    else if (g.state === 'red') target = 0;
+    else if (g.state === 'red') target = g.dir ?? 0;
     else if (g.state === 'turning') target = Math.PI * (g.tLeft / TURN_TIME);
     else target = Math.PI * (1 - g.tLeft / TURN_TIME);
     const k = 1 - Math.exp(-14 * dt);
@@ -752,10 +796,29 @@ export function createMedusaRenderer(
 
     const red = g.state === 'red' && snap.phase === 'play';
     redFade += ((red ? 1 : 0) - redFade) * (1 - Math.exp(-8 * dt));
-    for (const m of eyeMats) {
-      m.emissive.setRGB(0.25 + redFade * 0.75, 0.02, 0.02);
+    // Eye glow pulses harder as her current target nears petrification.
+    let danger = 0;
+    if (red && g.target > 0) {
+      const tuple = snap.players.find((p) => p[0] === g.target);
+      if (tuple) danger = tuple[5] / 100;
     }
-    if (redLight) redLight.intensity = redFade * 3.2;
+    const pulse = red && danger > 0 ? 0.15 * Math.abs(Math.sin(clockT * (4 + danger * 8))) : 0;
+    for (const m of eyeMats) {
+      m.emissive.setRGB(0.25 + redFade * (0.75 + danger * 0.6) + pulse, 0.02, 0.02);
+    }
+    if (redLight) redLight.intensity = redFade * (3.2 + danger * 2.5);
+    // Hiss: louder as anyone's meter climbs (v2), a whisper otherwise.
+    if (snap.eyesMode && snap.phase === 'play') {
+      let maxMeter = 0;
+      if (red) {
+        for (const p of snap.players) {
+          if (p[3] === ST_RUN && p[5] > maxMeter) maxMeter = p[5];
+        }
+      }
+      sfx.hiss(red ? 0.25 + (maxMeter / 100) * 0.75 : redFade * 0.15);
+    } else {
+      sfx.hiss(0);
+    }
   }
 
   function updateOneShots() {
@@ -842,12 +905,26 @@ export function createMedusaRenderer(
   // ------------------------------------------------------------- overlay
   const proj = new THREE.Vector3();
 
-  function drawOverlay(s: MedusaSnapshot, w: number, h: number, dpr: number) {
+  function drawOverlay(
+    s: MedusaSnapshot,
+    w: number,
+    h: number,
+    dpr: number,
+    faceCut: boolean,
+  ) {
     if (!overlay || !camera) return;
     const ctx = overlay.getContext('2d');
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
+
+    if (faceCut) {
+      // Fullscreen face: no labels, no positions — only the instruction and
+      // who the stone is creeping up.
+      drawFaceCutOverlay(ctx, s, w, h);
+      drawHud(ctx, s, w, h, true);
+      return;
+    }
 
     // Red vignette while she watches.
     if (redFade > 0.02) {
@@ -893,7 +970,59 @@ export function createMedusaRenderer(
       ctx.fillText(label, px, py);
     }
 
-    drawHud(ctx, s, w, h);
+    drawHud(ctx, s, w, h, false);
+  }
+
+  // Overlay for the v2 red-light face cut: red wash, the one-breath rule,
+  // and an "endangered" strip — the numbers the stone is creeping up,
+  // colored by tier. Legible escalation with zero position leakage.
+  function drawFaceCutOverlay(
+    ctx: CanvasRenderingContext2D,
+    s: MedusaSnapshot,
+    w: number,
+    h: number,
+  ) {
+    const grad = ctx.createRadialGradient(
+      w / 2,
+      h / 2,
+      Math.min(w, h) * 0.3,
+      w / 2,
+      h / 2,
+      Math.max(w, h) * 0.75,
+    );
+    grad.addColorStop(0, 'rgba(120, 10, 20, 0.05)');
+    grad.addColorStop(1, `rgba(160, 10, 25, ${0.35 + 0.1 * Math.abs(Math.sin(clockT * 2))})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `800 ${Math.round(h * 0.05)}px system-ui`;
+    ctx.fillStyle = '#ffd9dc';
+    ctx.fillText('LOOK AT YOUR PHONE — OR CLOSE YOUR EYES', w / 2, h * 0.9);
+
+    // Endangered numbers, worst first.
+    const endangered = s.players
+      .filter((p) => p[3] === ST_RUN && (p[6] > 0 || p[5] >= 40))
+      .sort((a, b) => b[5] - a[5])
+      .slice(0, 12);
+    if (endangered.length > 0) {
+      ctx.font = `800 ${Math.round(h * 0.038)}px system-ui`;
+      const gap = h * 0.075;
+      const total = endangered.length * gap;
+      endangered.forEach((p, i) => {
+        const x = w / 2 - total / 2 + gap * (i + 0.5);
+        const y = h * 0.8;
+        const tier = p[6];
+        const color = p[5] >= 85 ? '#ff5964' : tier >= 2 ? '#ff9b54' : '#ffe066';
+        ctx.fillStyle = 'rgba(10, 8, 14, 0.65)';
+        ctx.beginPath();
+        ctx.roundRect(x - gap * 0.42, y - gap * 0.36, gap * 0.84, gap * 0.72, 8);
+        ctx.fill();
+        ctx.fillStyle = color;
+        ctx.fillText(String(p[0]).padStart(2, '0'), x, y);
+      });
+    }
   }
 
   function drawHud(
@@ -901,6 +1030,7 @@ export function createMedusaRenderer(
     s: MedusaSnapshot,
     w: number,
     h: number,
+    faceCut: boolean,
   ) {
     const room = getRoom();
     ctx.textBaseline = 'top';
@@ -925,8 +1055,8 @@ export function createMedusaRenderer(
       h * 0.03,
     );
 
-    // Gaze banner.
-    if (s.phase === 'play') {
+    // Gaze banner (the face cut draws its own instruction).
+    if (s.phase === 'play' && !faceCut) {
       const g = s.gaze.state;
       const label =
         g === 'green'
@@ -1000,6 +1130,7 @@ export function createMedusaRenderer(
   }
 
   function dispose() {
+    sfx.hiss(0);
     renderer?.dispose();
     if (container) container.innerHTML = '';
     scene = null;

@@ -11,6 +11,8 @@ import { io, type Socket } from 'socket.io-client';
 import type {
   JoinResponse,
   LosSnapshot,
+  MedusaFieldMsg,
+  MedusaShieldMsg,
   MedusaSnapshot,
   MeState,
   PuzzleSnapshot,
@@ -469,6 +471,21 @@ async function main() {
   // Eye mode is ON for the round, but per-player: only phones streaming eye
   // reports get eye rules — everyone else (victim, faller, safe runners)
   // exercises the classic path in the same round.
+  // Phone-channel contract: players get the static 'field' layout once and
+  // a personal 'shield' stream during her gaze — but NEVER stage snapshots.
+  let fieldMsgs = 0;
+  let shieldMsgs = 0;
+  let lastField: MedusaFieldMsg | null = null;
+  let lastShield: MedusaShieldMsg | null = null;
+  bots[2].socket.on('field', (m: MedusaFieldMsg) => {
+    fieldMsgs++;
+    lastField = m;
+  });
+  bots[2].socket.on('shield', (m: MedusaShieldMsg) => {
+    shieldMsgs++;
+    lastShield = m;
+  });
+  bots[2].socket.on('snapshot', () => fail('a phone received a stage snapshot'));
   stage.emit('host:start', { game: 'medusa', options: { medusaEyes: true } });
   await waitFor('medusa play phase', 8000, () =>
     latestSnapshot?.kind === 'medusa' && latestSnapshot.phase === 'play' ? true : null,
@@ -651,6 +668,29 @@ async function main() {
   });
   if (starerTierSeen < 1) {
     fail(`caught starer petrified without ever reaching tier 1 (saw ${starerTierSeen})`);
+  }
+  // By now at least one red has passed: verify the phone channel.
+  {
+    if (fieldMsgs < 1) fail('phone never received the field layout');
+    const f = lastField as MedusaFieldMsg | null;
+    if (!f || f.length !== 24 || f.platforms.length < 2 || f.pits.length === 0) {
+      fail('field layout message incomplete');
+    }
+    if (shieldMsgs < 3) fail(`only ${shieldMsgs} shield messages during her gaze`);
+    const sh = lastShield as MedusaShieldMsg | null;
+    if (!sh) fail('no shield message captured');
+    else {
+      const [mc, ml] = sh.me;
+      for (const [slot, c, l] of sh.near) {
+        if (Math.abs(c - mc) > 3 || Math.abs(l - ml) > 3) {
+          fail(`shield 'near' leaked far player ${slot} at (${c},${l}) from (${mc},${ml})`);
+        }
+      }
+      if (sh.me[4] !== 1) fail(`closed runner shield gz ${sh.me[4]}, expected 1`);
+    }
+    console.log(
+      `medusa: phone channel — 1 field msg, ${shieldMsgs} shield msgs, near-window clean, no snapshots`,
+    );
   }
   await waitFor('the closed-eyes runner to finish alive', 60000, () => {
     const s = latestSnapshot as MedusaSnapshot | null;

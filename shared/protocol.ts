@@ -193,6 +193,18 @@ export interface MedusaFieldMsg {
   platforms: { id: number; lane: number; c0: number; c1: number }[];
 }
 
+// Phone shield view stream ('shield' event): sent ~5Hz to each running
+// player while Medusa is turning/red/returning in a v2 round. The big
+// screen shows only her face during red — everything the player can see of
+// the field comes through this little window.
+export interface MedusaShieldMsg {
+  g: [number, number, number]; // [gaze code 0g/1t/2r/3rt, sweep dir, tLeft]
+  me: [number, number, number, number, number]; // [col, lane, meterQ, tier, gz]
+  near: [number, number, number, number, number][]; // [slot,col,lane,state,tier] within r<=3
+  pf: [number, number][]; // ferries near the window: [id, pos]
+  cr: [number, number, number][]; // crumble near the window: [col, lane, stage]
+}
+
 export type StageSnapshot = LosSnapshot | PuzzleSnapshot | MedusaSnapshot;
 
 // ---------------------------------------------------------------------------
@@ -275,6 +287,7 @@ export interface HostStartRequest {
 //  'me'       MeState          — one phone
 //  'buzz'     BuzzType         — one phone (vibration cue)
 //  'field'    MedusaFieldMsg   — one phone, once per Medusa round (static layout)
+//  'shield'   MedusaShieldMsg  — one phone, ~5Hz during turning/red/returning (v2)
 // Client → server:
 //  'stage:create' (cb: {code, room})
 //  'stage:attach' ({code}, cb: StageAttachResponse)
