@@ -257,8 +257,9 @@ async function main() {
       const p = pos.get(bot.slot);
       if (!p || p[3] !== 0) return;
       if (i < 3) {
-        // a few players get caught staring — feeds the endangered strip
-        bot.socket.emit('input', { t: 'gaze', s: 2, c: 0.9 });
+        // a few players hover mid-meter — caught until the stone reaches
+        // their legs, then eyes shut — so tiers 1-2 stay visible on screen
+        bot.socket.emit('input', { t: 'gaze', s: p[5] < 55 ? 2 : 1, c: 0.9 });
         return;
       }
       bot.socket.emit('input', { t: 'gaze', s: 1, c: 0.9 });
@@ -276,13 +277,24 @@ async function main() {
   }
   await sleep(1800); // past the fairness grace — tiers rise, strip populates
   await page.screenshot({ path: path.join(OUT_DIR, '6-medusa-face.png') });
-  // The shield is a lazy 3D chunk — make sure it mounted before capturing.
+  // The shield is a lazy 3D chunk and shows only during red — make sure it
+  // mounted and capture the phone while she's still watching.
   await phone
     .locator('.shield-box canvas')
     .first()
     .waitFor({ timeout: 5000 })
     .catch(() => {});
   await phone.screenshot({ path: path.join(OUT_DIR, '7-phone-shield.png') });
+  // Back on green the field returns — tiers decay slowly, so the stone
+  // creeping up the caught starers is visible.
+  const greenAt = Date.now();
+  while (Date.now() - greenAt < 15000) {
+    const s = latest as MedusaSnapshot | null;
+    if (s?.kind === 'medusa' && s.gaze.state === 'green') break;
+    await sleep(120);
+  }
+  await sleep(600);
+  await page.screenshot({ path: path.join(OUT_DIR, '8-medusa-tiers.png') });
   clearInterval(v2driver);
   console.log('medusa v2 captured');
   await phone.close();

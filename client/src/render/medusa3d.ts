@@ -75,6 +75,7 @@ export function createMedusaRenderer(
   let headSpin: THREE.Group | null = null; // rotates for gaze
   let eyeMats: THREE.MeshLambertMaterial[] = [];
   let redLight: THREE.PointLight | null = null;
+  let snakeGroups: THREE.Group[] = []; // procedural hair — writhes as she turns
 
   let lastNow = 0;
   let clockT = 0; // renderer-local seconds
@@ -136,6 +137,7 @@ export function createMedusaRenderer(
     headSpin = null;
     redLight = null;
     eyeMats = [];
+    snakeGroups = [];
     built = false;
     finishedSeen = 0;
     lastGaze = 'none';
@@ -180,6 +182,7 @@ export function createMedusaRenderer(
         wrap.rotation.y = -Math.PI / 2;
         wrap.add(model);
         headSpin.clear();
+        snakeGroups = []; // the glb replaces the procedural snakes
         headSpin.add(wrap);
         addEyesLight();
       },
@@ -193,6 +196,7 @@ export function createMedusaRenderer(
     if (!headSpin) return;
     headSpin.clear();
     eyeMats = [];
+    snakeGroups = [];
     const g = new THREE.Group();
     const skin = new THREE.MeshLambertMaterial({ color: 0x5f8a4e });
     const face = new THREE.Mesh(new THREE.SphereGeometry(1.15, 20, 16), skin);
@@ -213,6 +217,10 @@ export function createMedusaRenderer(
       snake.position.set(Math.cos(a) * 0.62, 0.72, Math.sin(a) * 0.62);
       snake.rotation.z = Math.cos(a) * tilt;
       snake.rotation.x = -Math.sin(a) * tilt;
+      snake.userData.baseZ = snake.rotation.z;
+      snake.userData.baseX = snake.rotation.x;
+      snake.userData.phase = i * 1.7;
+      snakeGroups.push(snake);
       g.add(snake);
     }
     // Eyes on the -x side (facing the field when headSpin.rotation.y === 0).
@@ -469,6 +477,24 @@ export function createMedusaRenderer(
     const k = 1 - Math.exp(-14 * dt);
     headSpin.rotation.y += (target - headSpin.rotation.y) * k;
 
+    // The snakes writhe — hardest during the telegraph, agitated while she
+    // watches, barely stirring while she faces away.
+    const writhe =
+      snap.phase !== 'play'
+        ? 0.04
+        : g.state === 'turning'
+          ? 0.3
+          : g.state === 'red'
+            ? 0.16
+            : 0.04;
+    for (const snake of snakeGroups) {
+      const p = snake.userData.phase as number;
+      snake.rotation.z =
+        (snake.userData.baseZ as number) + Math.sin(clockT * (5 + writhe * 14) + p) * writhe;
+      snake.rotation.x =
+        (snake.userData.baseX as number) + Math.cos(clockT * (4 + writhe * 11) + p * 1.3) * writhe * 0.7;
+    }
+
     const red = g.state === 'red' && snap.phase === 'play';
     redFade += ((red ? 1 : 0) - redFade) * (1 - Math.exp(-8 * dt));
     // Eye glow pulses harder as her current target nears petrification.
@@ -482,17 +508,23 @@ export function createMedusaRenderer(
       m.emissive.setRGB(0.25 + redFade * (0.75 + danger * 0.6) + pulse, 0.02, 0.02);
     }
     if (redLight) redLight.intensity = redFade * (3.2 + danger * 2.5);
-    // Hiss: louder as anyone's meter climbs (v2), a whisper otherwise.
-    if (snap.eyesMode && snap.phase === 'play') {
+    // Hiss: ramps up through the turning telegraph (the audible "she's
+    // coming" cue in both modes), stays on through red — in v2 growing
+    // louder as anyone's meter climbs — and dies away on green.
+    if (snap.phase !== 'play') {
+      sfx.hiss(0);
+    } else if (g.state === 'turning') {
+      sfx.hiss(0.2 + 0.5 * (1 - g.tLeft / TURN_TIME));
+    } else if (red) {
       let maxMeter = 0;
-      if (red) {
+      if (snap.eyesMode) {
         for (const p of snap.players) {
           if (p[3] === ST_RUN && p[5] > maxMeter) maxMeter = p[5];
         }
       }
-      sfx.hiss(red ? 0.25 + (maxMeter / 100) * 0.75 : redFade * 0.15);
+      sfx.hiss(snap.eyesMode ? 0.25 + (maxMeter / 100) * 0.75 : 0.3);
     } else {
-      sfx.hiss(0);
+      sfx.hiss(redFade * 0.15);
     }
   }
 

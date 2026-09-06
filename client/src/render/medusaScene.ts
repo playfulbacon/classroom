@@ -313,6 +313,17 @@ export function makeAvatar(slot: number, color: string, parent: THREE.Object3D):
   blindfold.name = 'blindfold';
   blindfold.visible = false;
   group.add(blindfold);
+  // Stone creeping up the body, tier by tier: feet first, then the legs.
+  const stoneFeet = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 0.16, 10), stoneMat);
+  stoneFeet.position.y = 0.1;
+  stoneFeet.name = 'stone-feet';
+  stoneFeet.visible = false;
+  group.add(stoneFeet);
+  const stoneLegs = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.25, 0.26, 10), stoneMat);
+  stoneLegs.position.y = 0.3;
+  stoneLegs.name = 'stone-legs';
+  stoneLegs.visible = false;
+  group.add(stoneLegs);
   parent.add(group);
   return {
     group,
@@ -335,7 +346,9 @@ export function makeAvatar(slot: number, color: string, parent: THREE.Object3D):
   };
 }
 
-// Stone creeping up a runner: their colors gray out tier by tier.
+// Stone creeping up a runner: their colors gray out and stone climbs the
+// body tier by tier — feet at tier 1, legs at tier 2 (full statue is the
+// state change, not a tier).
 export function applyTier(av: Avatar, tier: number) {
   av.tier = tier;
   if (av.state !== ST_RUN) return;
@@ -345,6 +358,10 @@ export function applyTier(av: Avatar, tier: number) {
   av.headMat.color.copy(
     base.clone().lerp(new THREE.Color('#ffffff'), 0.35).lerp(gray, tier * 0.38),
   );
+  const feet = av.group.getObjectByName('stone-feet');
+  if (feet) feet.visible = tier >= 1;
+  const legs = av.group.getObjectByName('stone-legs');
+  if (legs) legs.visible = tier >= 2;
 }
 
 export function turnToStone(av: Avatar) {
