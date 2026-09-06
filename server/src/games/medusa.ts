@@ -522,7 +522,11 @@ export class Medusa implements GameModule {
         const s = this.t < brain.lapseUntil ? GZ_CAUGHT : brain.closedStyle ? GZ_CLOSED : GZ_SHIELD;
         msgs.push({ t: 'gaze', s: s as 0 | 1 | 2 | 3, c: 0.9 });
       }
-      const hop = this.botHop(runner, brain);
+      // Bots running blind lose the line like humans do: hesitant cadence
+      // and the occasional drift off the memorized route (a drift into a
+      // pit just bounces — it costs time, which is the point).
+      const blind = this.gaze === 'red' && brain.closedStyle && this.t >= brain.lapseUntil;
+      const hop = this.botHop(runner, brain, blind);
       if (hop) msgs.push(hop);
       return msgs.length > 0 ? msgs : null;
     }
@@ -542,13 +546,17 @@ export class Medusa implements GameModule {
     return this.botHop(runner, brain);
   }
 
-  private botHop(runner: Runner, brain: BotBrain): InputPayload | null {
+  private botHop(runner: Runner, brain: BotBrain, blind = false): InputPayload | null {
     // Mid-ferry: wait for the far bank, then step off. (The ferry does the
     // work; hopping into open water is refused anyway.)
     if (runner.ride !== null) {
       return this.passable(runner.col + 1, runner.lane) ? { t: 'hop', d: 'f' } : null;
     }
-    if (Math.random() > brain.eagerness) return null;
+    if (Math.random() > brain.eagerness * (blind ? 0.3 : 1)) return null;
+    if (blind && Math.random() < 0.35) {
+      const dirs = ['f', 'f', 'l', 'r'] as const;
+      return { t: 'hop', d: dirs[Math.floor(Math.random() * dirs.length)] };
+    }
     // BFS to the finish around obstacles — greedy dodging can trap a runner
     // in a pit pocket forever; the generated fields are always solvable.
     const d = this.pathStep(runner.col, runner.lane);
@@ -809,7 +817,8 @@ export class Medusa implements GameModule {
       gaze: {
         state: this.gaze,
         tLeft: round1(Math.max(0, this.gazeUntil - this.t)),
-        dir: round2(this.sweepDir()),
+        // classic red has no cone — don't make her head imply one
+        dir: eyesMode ? round2(this.sweepDir()) : 0,
         target,
       },
       players,

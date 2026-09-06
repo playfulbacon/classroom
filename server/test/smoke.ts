@@ -595,9 +595,10 @@ async function main() {
       const advance = () =>
         hop(bot, riding ? (blockedCell(col + 1, lane) ? null : 'f') : dodge(col, lane));
       if (bot.slot === noCamera) {
-        // Never streams gaze; only ever moves on green. The meter must still
-        // find them during red — hiding from the camera is a slow death.
-        if (green && driverTick % 3 === 0) advance();
+        // Never streams gaze; only ever moves on green, and camps mid-field
+        // (so it can never outrun the meter to the finish). The slow death
+        // must find them during red.
+        if (green && driverTick % 3 === 0 && col < 12) advance();
         continue;
       }
       if (bot.slot === caughtStarer) {
@@ -643,7 +644,7 @@ async function main() {
     }
   }, 130);
 
-  await waitFor('runners to make progress', 20000, () => {
+  await waitFor('runners to make progress', 30000, () => {
     const s = latestSnapshot as MedusaSnapshot | null;
     if (!s || s.kind !== 'medusa') return null;
     return s.players.some((p) => p[1] >= 5) ? true : null;

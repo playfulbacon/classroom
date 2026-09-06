@@ -1091,7 +1091,13 @@ export function createMedusaRenderer(
       ctx.fillStyle = 'rgba(255,255,255,0.95)';
       ctx.fillText(String(s.countdown), w / 2, h / 2);
       ctx.font = `700 ${Math.round(h * 0.035)}px system-ui`;
-      ctx.fillText('Reach Medusa before time runs out — freeze when she turns!', w / 2, h * 0.8);
+      ctx.fillText(
+        s.eyesMode
+          ? 'Reach Medusa in time — when she turns: look at your phone, or close your eyes!'
+          : 'Reach Medusa before time runs out — freeze when she turns!',
+        w / 2,
+        h * 0.8,
+      );
     } else if (s.phase === 'over') {
       ctx.fillStyle = 'rgba(10,12,24,0.85)';
       const pw = w * 0.46;
