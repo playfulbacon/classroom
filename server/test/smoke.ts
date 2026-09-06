@@ -466,7 +466,10 @@ async function main() {
   // ==========================================================================
   // Game 3: Medusa
   // ==========================================================================
-  stage.emit('host:start', { game: 'medusa' });
+  // Eye mode is ON for the round, but per-player: only phones streaming eye
+  // reports get eye rules — everyone else (victim, faller, safe runners)
+  // exercises the classic path in the same round.
+  stage.emit('host:start', { game: 'medusa', options: { medusaEyes: true } });
   await waitFor('medusa play phase', 8000, () =>
     latestSnapshot?.kind === 'medusa' && latestSnapshot.phase === 'play' ? true : null,
   );
@@ -474,8 +477,10 @@ async function main() {
   console.log(`medusa: field ${med0.length}x${med0.lanes} with ${med0.pits.length} pits`);
   const pitSet = new Set(med0.pits.map(([c, l]) => l * 1000 + c));
   const isPit = (c: number, l: number) => pitSet.has(l * 1000 + c);
-  const victim = bots[0].slot; // taps blindly through red → statue
+  const victim = bots[0].slot; // no camera, taps through red → statue (classic)
   const faller = bots[1].slot; // steered into the nearest pit
+  const blindRunner = bots[2].slot; // eyes-closed reports, never stops hopping
+  const openEyes = bots[3].slot; // eyes-open reports, stands perfectly still
 
   let driverTick = 0;
   const medusaDriver = setInterval(() => {
@@ -484,11 +489,41 @@ async function main() {
     if (!s || s.kind !== 'medusa' || s.phase !== 'play') return;
     const pos = new Map(s.players.map((p) => [p[0], p] as const));
     const green = s.gaze.state === 'green';
+    // BFS to the finish column around pits — greedy dodging can oscillate
+    // forever inside a pit pocket; the generated fields are always solvable.
     const dodge = (col: number, lane: number): 'f' | 'l' | 'r' | 'b' => {
-      if (!isPit(col + 1, lane)) return 'f';
-      if (lane + 1 < s.lanes && !isPit(col, lane + 1) && !isPit(col + 1, lane + 1)) return 'r';
-      if (lane - 1 >= 0 && !isPit(col, lane - 1) && !isPit(col + 1, lane - 1)) return 'l';
-      return 'b';
+      const key = (c: number, l: number) => l * 1000 + c;
+      const prev = new Map<number, number>();
+      const queue = [key(col, lane)];
+      prev.set(queue[0], -1);
+      let goal = -1;
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        const c = cur % 1000;
+        const l = Math.floor(cur / 1000);
+        if (c === s.length - 1) {
+          goal = cur;
+          break;
+        }
+        for (const [dc, dl] of [[1, 0], [0, -1], [0, 1], [-1, 0]] as const) {
+          const nc = c + dc;
+          const nl = l + dl;
+          if (nc < 0 || nc >= s.length || nl < 0 || nl >= s.lanes) continue;
+          const nk = key(nc, nl);
+          if (prev.has(nk) || isPit(nc, nl)) continue;
+          prev.set(nk, cur);
+          queue.push(nk);
+        }
+      }
+      if (goal < 0) return 'f'; // unreachable start (shouldn't happen) — press on
+      let step = goal;
+      while (prev.get(step) !== key(col, lane) && prev.get(step) !== -1) {
+        step = prev.get(step)!;
+      }
+      if (prev.get(step) === -1) return 'f'; // already at the goal cell
+      const dc = (step % 1000) - col;
+      const dl = Math.floor(step / 1000) - lane;
+      return dc === 1 ? 'f' : dc === -1 ? 'b' : dl === -1 ? 'l' : 'r';
     };
     for (const bot of bots) {
       const p = pos.get(bot.slot);
@@ -498,6 +533,17 @@ async function main() {
         // Dodges pits but ignores the gaze entirely, at a jog — guaranteed to
         // still be mid-field when red catches a hop.
         if (driverTick % 3 === 0) bot.socket.emit('input', { t: 'hop', d: dodge(col, lane) });
+        continue;
+      }
+      if (bot.slot === blindRunner) {
+        // Streams eyes-closed and sprints straight through red: legal.
+        bot.socket.emit('input', { t: 'eyes', open: false, seen: true });
+        bot.socket.emit('input', { t: 'hop', d: dodge(col, lane) });
+        continue;
+      }
+      if (bot.slot === openEyes) {
+        // Streams eyes-open and never moves: red must petrify them anyway.
+        bot.socket.emit('input', { t: 'eyes', open: true, seen: true });
         continue;
       }
       if (!green) continue;
@@ -529,6 +575,32 @@ async function main() {
     if (!s || s.kind !== 'medusa') return null;
     return s.players.some((p) => p[1] >= 5) ? true : null;
   });
+  // Snapshot eye flags: -1 for camera-less players, 1 for the blind runner,
+  // 0 for the open-eyed starer.
+  {
+    const s = latestSnapshot as unknown as MedusaSnapshot;
+    const eyeOf = (slot: number) => s.players.find((p) => p[0] === slot)?.[4];
+    if (eyeOf(victim) !== -1) fail(`victim eye flag ${eyeOf(victim)}, expected -1`);
+    if (eyeOf(blindRunner) !== 1) fail(`blind runner eye flag ${eyeOf(blindRunner)}, expected 1`);
+    const staringEye = eyeOf(openEyes);
+    if (staringEye !== 0 && staringEye !== undefined) {
+      // may already be petrified (flag then reads whatever their last state was)
+    }
+  }
+  await waitFor('the open-eyed starer to petrify without moving', 30000, () => {
+    const s = latestSnapshot as MedusaSnapshot | null;
+    if (!s || s.kind !== 'medusa') return null;
+    const p = s.players.find((q) => q[0] === openEyes);
+    return p && p[3] === 1 ? true : null;
+  });
+  await waitFor('the blind runner to finish alive', 60000, () => {
+    const s = latestSnapshot as MedusaSnapshot | null;
+    if (!s || s.kind !== 'medusa') return null;
+    const p = s.players.find((q) => q[0] === blindRunner);
+    if (p && (p[3] === 1 || p[3] === 3)) fail('blind runner died — eyes-closed red hops must be legal');
+    return p && p[3] === 2 ? true : null;
+  });
+  console.log('medusa: eye mode — open eyes petrified standing still, blind runner escaped');
   const statueBot = await waitFor('the reckless tapper to petrify', 30000, () => {
     const s = latestSnapshot as MedusaSnapshot | null;
     if (!s || s.kind !== 'medusa') return null;

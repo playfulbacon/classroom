@@ -360,6 +360,14 @@ export function Stage() {
               />
               piece rotation
             </label>
+            <label title="Phones use the front camera (on-device only) — looking at Medusa during red petrifies you; eyes-closed players may keep moving">
+              <input
+                type="checkbox"
+                checked={room.options.medusaEyes}
+                onChange={(e) => setOptions({ medusaEyes: e.target.checked })}
+              />
+              👁 eye mode
+            </label>
             <div className="bot-controls">
               <button
                 onClick={() => socket.emit('host:bots', { delta: -1 })}

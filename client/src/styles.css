@@ -403,6 +403,88 @@ input {
   inset: 0;
 }
 
+.eyecam-consent {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(320px, 86vw);
+  background: rgba(14, 17, 33, 0.96);
+  border: 1px solid #2a3155;
+  border-radius: 16px;
+  padding: 20px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+}
+
+.eyecam-consent p {
+  color: #b9c0e0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.eyecam-consent button {
+  padding: 13px;
+  border-radius: 10px;
+  border: none;
+  font-size: 16px;
+  font-weight: 700;
+  color: white;
+}
+
+.eyecam-consent .yes {
+  background: #7c5cff;
+}
+
+.eyecam-consent .no {
+  background: #2a3155;
+}
+
+.eyecam {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  right: 10px;
+  width: 76px;
+  height: 76px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  z-index: 55;
+  pointer-events: none;
+  background: #000;
+}
+
+.eyecam-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.eyecam-state {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font-size: 20px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8));
+}
+
+.eyecam-chip {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  right: 10px;
+  background: rgba(14, 17, 33, 0.85);
+  border: 1px solid #2a3155;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: #b9c0e0;
+  z-index: 55;
+  pointer-events: none;
+}
+
 .progress-track {
   position: fixed;
   left: 16px;

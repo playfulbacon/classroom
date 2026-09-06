@@ -355,6 +355,15 @@ export function createMedusaRenderer(
     shadow.rotation.x = -Math.PI / 2;
     shadow.position.y = 0.012;
     group.add(shadow);
+    // Eye-mode blindfold band: shown while this player runs eyes-closed.
+    const blindfold = new THREE.Mesh(
+      new THREE.BoxGeometry(0.4, 0.09, 0.4),
+      new THREE.MeshLambertMaterial({ color: 0x14161f }),
+    );
+    blindfold.position.y = 0.87;
+    blindfold.name = 'blindfold';
+    blindfold.visible = false;
+    group.add(blindfold);
     scene?.add(group);
     return {
       group,
@@ -475,7 +484,7 @@ export function createMedusaRenderer(
       finishedSeen = s.finished.length;
     }
 
-    for (const [slot, col, lane, state] of s.players) {
+    for (const [slot, col, lane, state, eyes] of s.players) {
       let av = avatars.get(slot);
       if (!av) {
         av = makeAvatar(slot, colors.get(slot) ?? '#999');
@@ -512,6 +521,8 @@ export function createMedusaRenderer(
         }
         av.state = state;
       }
+      const blindfold = av.group.getObjectByName('blindfold');
+      if (blindfold) blindfold.visible = eyes === 1 && state === ST_RUN;
     }
     for (const slot of s.pings) {
       const av = avatars.get(slot);

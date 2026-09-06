@@ -1,4 +1,5 @@
 node_modules/
 dist/
+server/screenshots/
 *.log
 .DS_Store

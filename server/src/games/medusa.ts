@@ -17,6 +17,8 @@ const COUNTDOWN = 3;
 const TIME_LIMIT = 90; // seconds; at timeout Medusa's final gaze petrifies everyone
 const LENGTH = 24; // columns along the race axis; last column is the finish
 const GRACE = 0.3; // seconds after red locks during which hops are forgiven
+const EYES_GRACE = 0.6; // longer: time to physically close eyes + detection lag
+const EYES_FRESH = 1.5; // seconds before eye reports go stale → classic rules
 const HOP_COOLDOWN = 0.18; // bounds tap-mash speed
 const PING_COOLDOWN = 2;
 const TURN_TIME = 0.8; // turning / returning duration (the audible warning)
@@ -34,6 +36,10 @@ interface Runner {
   state: PlayerState;
   lastHopAt: number;
   lastPingAt: number;
+  // Eye mode (camera): latest on-device report from this player's phone.
+  eyesOpen: boolean;
+  faceSeen: boolean;
+  eyesAt: number; // t of the latest report; -Infinity = never reported
 }
 
 interface BotBrain {
@@ -88,6 +94,9 @@ export class Medusa implements GameModule {
         state: MEDUSA_RUNNING,
         lastHopAt: -1,
         lastPingAt: -PING_COOLDOWN,
+        eyesOpen: true,
+        faceSeen: false,
+        eyesAt: -Infinity,
       });
     });
     this.scheduleGaze('green', this.greenDuration());
@@ -153,7 +162,21 @@ export class Medusa implements GameModule {
       state: MEDUSA_RUNNING,
       lastHopAt: -1,
       lastPingAt: -PING_COOLDOWN,
+      eyesOpen: true,
+      faceSeen: false,
+      eyesAt: -Infinity,
     });
+  }
+
+  // Eye rules apply only while this runner's phone streams fresh face data;
+  // a denied/covered/lost camera silently reverts them to classic rules, so
+  // hiding the lens never helps.
+  private eyeModeActive(runner: Runner): boolean {
+    return (
+      this.ctx.options.medusaEyes &&
+      runner.faceSeen &&
+      this.t - runner.eyesAt < EYES_FRESH
+    );
   }
 
   input(slot: number, payload: InputPayload) {
@@ -165,16 +188,33 @@ export class Medusa implements GameModule {
       this.pings.push(slot);
       return;
     }
+    if (payload.t === 'eyes') {
+      if (!this.ctx.options.medusaEyes) return; // toggle off → inert
+      runner.eyesOpen = payload.open === true;
+      runner.faceSeen = payload.seen === true;
+      runner.eyesAt = this.t;
+      return;
+    }
     if (payload.t !== 'hop') return;
     if (this.phase !== 'play' || runner.state !== MEDUSA_RUNNING) return;
     if (this.t - runner.lastHopAt < HOP_COOLDOWN) return;
     runner.lastHopAt = this.t;
 
-    // Medusa's rule: a hop while she's looking (past the grace window)
-    // petrifies you where you stand — the hop never happens.
+    // Medusa's rule during red (past the grace window):
+    // - eye mode: LOOKING is the crime — eyes-closed players may keep moving
+    //   blind (the open-eyed are petrified by the tick loop anyway);
+    // - classic: any hop petrifies you where you stand — it never lands.
     if (this.gaze === 'red' && this.t - this.redSince > GRACE) {
-      this.petrify(runner);
-      return;
+      if (this.eyeModeActive(runner)) {
+        if (runner.eyesOpen) {
+          this.petrify(runner);
+          return;
+        }
+        // eyes shut — brave the blind hop
+      } else {
+        this.petrify(runner);
+        return;
+      }
     }
 
     let { col, lane } = runner;
@@ -202,6 +242,12 @@ export class Medusa implements GameModule {
       this.ctx.buzz(slot, 'locked');
       this.ctx.emitMe(slot);
       this.checkEnd();
+    }
+  }
+
+  private buzzRunners(type: 'go' | 'bumped') {
+    for (const r of this.runners.values()) {
+      if (r.state === MEDUSA_RUNNING) this.ctx.buzz(r.slot, type);
     }
   }
 
@@ -252,19 +298,46 @@ export class Medusa implements GameModule {
       if (!sneak) return null;
     }
     if (Math.random() > brain.eagerness) return null;
-    // Route around pits: prefer forward; else sidestep toward a clear lane.
-    const clear = (col: number, lane: number) =>
-      lane >= 0 && lane < this.lanes && !this.pits.has(this.pitKey(col, lane));
-    if (clear(runner.col + 1, runner.lane)) return { t: 'hop', d: 'f' };
-    const leftOk =
-      clear(runner.col, runner.lane - 1) && clear(runner.col + 1, runner.lane - 1);
-    const rightOk =
-      clear(runner.col, runner.lane + 1) && clear(runner.col + 1, runner.lane + 1);
-    if (leftOk && (!rightOk || Math.random() < 0.5)) return { t: 'hop', d: 'l' };
-    if (rightOk) return { t: 'hop', d: 'r' };
-    if (clear(runner.col, runner.lane - 1)) return { t: 'hop', d: 'l' };
-    if (clear(runner.col, runner.lane + 1)) return { t: 'hop', d: 'r' };
-    return { t: 'hop', d: 'b' };
+    // BFS to the finish around pits — greedy dodging can trap a runner in a
+    // pit pocket forever; the generated fields are always solvable.
+    return { t: 'hop', d: this.pathStep(runner.col, runner.lane) };
+  }
+
+  private pathStep(fromCol: number, fromLane: number): 'f' | 'l' | 'r' | 'b' {
+    const key = (c: number, l: number) => l * LENGTH + c;
+    const start = key(fromCol, fromLane);
+    const prev = new Map<number, number>();
+    prev.set(start, -1);
+    const queue = [start];
+    while (queue.length > 0) {
+      const cell = queue.shift()!;
+      const c = cell % LENGTH;
+      const l = Math.floor(cell / LENGTH);
+      if (c === LENGTH - 1) {
+        let cur = cell;
+        for (;;) {
+          const p = prev.get(cur)!;
+          if (p === start) break;
+          if (p === -1) return 'f'; // already at the finish column
+          cur = p;
+        }
+        const dc = (cur % LENGTH) - fromCol;
+        const dl = Math.floor(cur / LENGTH) - fromLane;
+        if (dc === 1) return 'f';
+        if (dc === -1) return 'b';
+        return dl === -1 ? 'l' : 'r';
+      }
+      for (const [dc, dl] of [[1, 0], [0, -1], [0, 1], [-1, 0]] as const) {
+        const nc = c + dc;
+        const nl = l + dl;
+        if (nc < 0 || nc >= LENGTH || nl < 0 || nl >= this.lanes) continue;
+        const nk = key(nc, nl);
+        if (prev.has(nk) || this.pits.has(nk)) continue;
+        prev.set(nk, cell);
+        queue.push(nk);
+      }
+    }
+    return 'f'; // fully walled (cannot happen on generated fields)
   }
 
   personal(slot: number): Partial<MeState> {
@@ -275,6 +348,7 @@ export class Medusa implements GameModule {
       medusaState: states[runner.state],
       col: runner.col,
       fieldLength: LENGTH,
+      eyeMode: this.ctx.options.medusaEyes,
     };
     const rank = this.finished.indexOf(slot);
     if (rank !== -1) me.placement = rank + 1;
@@ -299,12 +373,29 @@ export class Medusa implements GameModule {
 
     this.t += dt;
 
-    // Gaze state machine.
+    // Gaze state machine. Turning/green transitions buzz every running phone
+    // so eyes-closed players get a non-visual cue (the stage's speakers
+    // already announce it to the room, so nothing secret leaks).
     if (this.t >= this.gazeUntil) {
-      if (this.gaze === 'green') this.scheduleGaze('turning', TURN_TIME);
-      else if (this.gaze === 'turning') this.scheduleGaze('red', 2 + Math.random() * 2.5);
-      else if (this.gaze === 'red') this.scheduleGaze('returning', TURN_TIME);
-      else this.scheduleGaze('green', this.greenDuration());
+      if (this.gaze === 'green') {
+        this.scheduleGaze('turning', TURN_TIME);
+        this.buzzRunners('bumped');
+      } else if (this.gaze === 'turning') {
+        this.scheduleGaze('red', 2 + Math.random() * 2.5);
+      } else if (this.gaze === 'red') {
+        this.scheduleGaze('returning', TURN_TIME);
+      } else {
+        this.scheduleGaze('green', this.greenDuration());
+        this.buzzRunners('go');
+      }
+    }
+
+    // Eye mode: during red, open eyes petrify — even standing still.
+    if (this.gaze === 'red' && this.t - this.redSince > EYES_GRACE) {
+      for (const r of this.runners.values()) {
+        if (r.state !== MEDUSA_RUNNING) continue;
+        if (this.eyeModeActive(r) && r.eyesOpen) this.petrify(r);
+      }
     }
 
     // Time up: her final gaze sweeps the whole field.
@@ -329,6 +420,7 @@ export class Medusa implements GameModule {
       r.col,
       r.lane,
       r.state,
+      this.eyeModeActive(r) ? (r.eyesOpen ? 0 : 1) : -1,
     ]);
     const snapshot: MedusaSnapshot = {
       kind: 'medusa',

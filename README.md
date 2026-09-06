@@ -52,6 +52,20 @@ synthesized sound cues. Drop a `medusa.glb` into `client/public/models/`
 to replace the built-in procedural head with your own model (see the
 README there).
 
+**👁 Eye mode** (lobby checkbox): the real Medusa rules. Each phone's
+front camera watches the player's *eyes* — during red, having your eyes
+**open** turns you to stone even if you're standing perfectly still, while
+players with eyes **closed** may keep hopping blind (memorize the route;
+the pits are still there). Detection runs entirely on the phone with
+MediaPipe face landmarks; **video never leaves the device** — only two
+booleans ("eyes open?", "face seen?") go to the server. Players get a
+one-tap consent card first, and anyone who declines, has no camera, or
+whose face drops out of frame simply plays by the classic
+freeze-on-movement rules — covering the lens earns you the *harder* rule,
+never an advantage. The stage marks eyes-closed runners with a blindfold.
+Note: browsers only expose the camera on **HTTPS or localhost**, so eye
+mode needs a deployed (or tunneled) HTTPS URL when phones join over LAN.
+
 ## Quick start
 
 ```bash
@@ -63,11 +77,12 @@ Open `http://localhost:5173/stage` for the big screen, and `http://localhost:517
 on phones (or more browser tabs) to join with the room code.
 
 **Testing with fake players:** the stage lobby has a 🤖 control (`−` / `＋` /
-`+10` / `clear`) that adds server-driven bots. They play both games for real —
-in Last One Standing they wander, flee the shrinking edge and dash at rivals;
-in Team Puzzles they pathfind to their team's assembly spot, and when a group
-mixes bots with humans, the bots come and assemble around the real player.
-Add and remove them from the lobby between rounds.
+`+10` / `clear`) that adds server-driven bots. They play all three games for
+real — in Last One Standing they wander, flee the shrinking edge and dash at
+rivals; in Team Puzzles they pathfind to their team's assembly spot, and when
+a group mixes bots with humans, the bots come and assemble around the real
+player; in Medusa they pathfind around the pits and freeze on red. Add and
+remove them from the lobby between rounds.
 
 For phones on the same network, use the LAN URL Vite prints (e.g.
 `http://192.168.x.x:5173`) — the QR code on the stage encodes whatever host the
@@ -89,10 +104,12 @@ only*; phones exchange a few tiny messages per second.
 ## Tests
 
 ```bash
-npm run smoke      # white-box puzzle unit tests, then an end-to-end run:
-                   # a real server, a stage + 12 simulated phones playing both
-                   # games, bots solving a 3x2 puzzle unaided, image
-                   # upload/serve round-trip, and an idle-player regression
+npm run smoke      # white-box unit tests (puzzle + medusa rules, eye mode),
+                   # then an end-to-end run: a real server, a stage + 12
+                   # simulated phones playing all three games (including an
+                   # eye-mode medusa round), bots solving a 3x2 puzzle and a
+                   # medusa field unaided, image upload/serve round-trip,
+                   # and an idle-player regression
 npm run typecheck
 ```
 
@@ -108,6 +125,9 @@ server/              Node + Express + Socket.IO
     teamPuzzles.ts       15 Hz grid logic: cell-stepped movement, slide-around
                          blocking, 2x2 snap detection, phantom pieces for
                          uneven class sizes
+    medusa.ts            red-light-green-light: gaze state machine, hop grace
+                         windows, pit fields with guaranteed safe paths,
+                         per-player eye-mode rules
 client/              Vite + React
   src/pages/Stage.tsx    projector: lobby with QR + canvas game rendering
   src/pages/Play.tsx     phone: full-screen gesture surface (drag joystick,
@@ -115,6 +135,9 @@ client/              Vite + React
   src/render/            canvas renderers (interpolation, tweening, confetti)
   src/art.ts             deterministic procedural artwork per puzzle group —
                          only the group id travels over the network
+  src/eyes.ts            lazy-loaded on-device eye tracking (MediaPipe face
+                         landmarks) for Medusa eye mode — emits only
+                         open/closed booleans, video stays on the phone
 ```
 
 Design notes:

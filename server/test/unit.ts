@@ -28,7 +28,7 @@ function makeGame(
         name: `P${i + 1}`,
         color: 'red',
       })),
-    options: { rotation: false, puzzleW, puzzleH },
+    options: { rotation: false, puzzleW, puzzleH, medusaEyes: false },
     isBot: () => true,
     imageIds: () => imageIds,
     emitStage: (s) => {
@@ -254,7 +254,7 @@ console.log('unit: phantom relocation OK');
 // Medusa
 // ---------------------------------------------------------------------------
 
-function makeMedusa(playerCount: number) {
+function makeMedusa(playerCount: number, medusaEyes = false) {
   const buzzes: [number, string][] = [];
   const ctx: GameCtx = {
     slots: () =>
@@ -263,7 +263,7 @@ function makeMedusa(playerCount: number) {
         name: `P${i + 1}`,
         color: 'red',
       })),
-    options: { rotation: false, puzzleW: 2, puzzleH: 2 },
+    options: { rotation: false, puzzleW: 2, puzzleH: 2, medusaEyes },
     isBot: () => true,
     imageIds: () => [],
     emitStage: () => {},
@@ -380,5 +380,73 @@ console.log('unit: medusa pit fields always solvable OK');
   assert.equal(internals.phase, 'over');
 }
 console.log('unit: medusa gaze/cooldown/pits/timeout OK');
+
+// Eye mode: looking during red petrifies (even standing still); eyes-closed
+// players may keep moving; stale/no camera silently means classic rules.
+{
+  // Toggle off → eyes inputs are inert.
+  {
+    const { game, internals } = makeMedusa(2, false);
+    game.input(1, { t: 'eyes', open: false, seen: true });
+    assert.equal(internals.runners.get(1).eyesAt, -Infinity, 'eyes inert when off');
+  }
+
+  const { game, internals } = makeMedusa(6, true);
+  const hold = (t: number) => {
+    internals.t = t;
+    internals.gaze = 'red';
+    internals.gazeUntil = t + 30; // hold red through the test ticks
+  };
+
+  // (a) fresh OPEN eyes during red: safe inside the 0.6s grace, petrified after.
+  const r1 = internals.runners.get(1);
+  hold(10);
+  game.input(1, { t: 'eyes', open: true, seen: true });
+  internals.redSince = 10 - 0.4; // inside EYES_GRACE
+  internals.tick(1 / 20);
+  assert.equal(r1.state, 0, 'open eyes inside the grace window survive');
+  internals.redSince = internals.t - 0.7; // past EYES_GRACE
+  internals.tick(1 / 20);
+  assert.equal(r1.state, 1, 'open eyes during red petrify — even standing still');
+
+  // (b) CLOSED eyes during red: hopping is allowed (blind running).
+  const r2 = internals.runners.get(2);
+  r2.col = 5;
+  r2.lane = 3;
+  internals.pits.delete(3 * 24 + 6);
+  hold(12);
+  internals.redSince = 12 - 2;
+  game.input(2, { t: 'eyes', open: false, seen: true });
+  game.input(2, { t: 'hop', d: 'f' });
+  assert.equal(r2.col, 6, 'eyes-closed hop during red moves');
+  assert.equal(r2.state, 0, 'blind runner survives');
+  internals.tick(1 / 20);
+  assert.equal(r2.state, 0, 'tick does not petrify closed eyes');
+
+  // (c) stale eye reports (>1.5s) → classic rules: standing open-eyed is
+  // safe, but hopping during red kills.
+  const r3 = internals.runners.get(3);
+  r3.col = 5;
+  r3.lane = 4;
+  hold(20);
+  game.input(3, { t: 'eyes', open: false, seen: true }); // closed… but about to go stale
+  internals.t = 22; // report now 2s old
+  internals.gazeUntil = 52;
+  internals.redSince = 20;
+  internals.tick(1 / 20);
+  assert.equal(r3.state, 0, 'stale eyes: standing still is safe (classic)');
+  game.input(3, { t: 'hop', d: 'f' });
+  assert.equal(r3.state, 1, 'stale eyes: hopping during red kills (classic)');
+
+  // (d) a player whose camera never reported behaves fully classic.
+  const r4 = internals.runners.get(4);
+  r4.col = 5;
+  r4.lane = 5;
+  internals.tick(1 / 20);
+  assert.equal(r4.state, 0, 'no camera: standing still is safe');
+  game.input(4, { t: 'hop', d: 'f' });
+  assert.equal(r4.state, 1, 'no camera: hopping during red kills');
+}
+console.log('unit: medusa eye mode OK');
 
 console.log('\nUNIT PASS ✅');

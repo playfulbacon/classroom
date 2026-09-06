@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { BuzzType, JoinResponse, MeState, RoomState } from '../../../shared/protocol';
 import { drawFragment, getRoomImage, groupArtCanvas } from '../art';
+import type { EyeState, EyeTracker } from '../eyes';
 import { loadCreds, saveCreds, socket } from '../socket';
 
 const JOY_RADIUS = 90; // px of drag for full deflection
@@ -190,6 +191,124 @@ function PiecePreview({ group, quadrant, gw, gh, imageId }: PiecePreviewProps) {
     };
   }, [group, quadrant, gw, gh, imageId]);
   return <canvas ref={ref} width={170} height={170} className="piece-preview" />;
+}
+
+type EyeCamStatus = 'ask' | 'starting' | 'on' | 'off' | 'failed';
+
+// Medusa eye mode: consent card → on-device eye tracking → tiny mirrored
+// self-preview with a live state icon. Detection runs entirely on the phone;
+// only {open, seen} booleans are sent. Unmounting stops the camera.
+function MedusaEyeCam() {
+  const [status, setStatus] = useState<EyeCamStatus>(() => {
+    try {
+      const remembered = sessionStorage.getItem('ca-eyecam');
+      if (remembered === 'yes') return 'starting';
+      if (remembered === 'no') return 'off';
+    } catch {
+      // fine
+    }
+    return 'ask';
+  });
+  const [eyes, setEyes] = useState<EyeState>({ open: true, seen: false });
+  const previewRef = useRef<HTMLDivElement>(null);
+  const trackerRef = useRef<EyeTracker | null>(null);
+  const lastRef = useRef<EyeState | null>(null);
+
+  const remember = (v: 'yes' | 'no') => {
+    try {
+      sessionStorage.setItem('ca-eyecam', v);
+    } catch {
+      // fine
+    }
+  };
+
+  useEffect(() => {
+    if (status !== 'starting') return;
+    let cancelled = false;
+    void (async () => {
+      const mod = await import('../eyes');
+      const result = await mod.startEyeTracking((s) => {
+        lastRef.current = s;
+        setEyes(s);
+        socket.emit('input', { t: 'eyes', open: s.open, seen: s.seen });
+      });
+      if (cancelled) {
+        if (typeof result === 'object') result.stop();
+        return;
+      }
+      if (result === 'denied' || result === 'unsupported') {
+        setStatus('failed');
+        return;
+      }
+      trackerRef.current = result;
+      result.video.className = 'eyecam-video';
+      previewRef.current?.appendChild(result.video);
+      setStatus('on');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [status]);
+
+  // Heartbeat so the server can tell fresh reports from a dead camera.
+  useEffect(() => {
+    if (status !== 'on') return;
+    const iv = setInterval(() => {
+      const s = lastRef.current;
+      if (s) socket.emit('input', { t: 'eyes', open: s.open, seen: s.seen });
+    }, 500);
+    return () => clearInterval(iv);
+  }, [status]);
+
+  useEffect(
+    () => () => {
+      trackerRef.current?.stop();
+      trackerRef.current = null;
+    },
+    [],
+  );
+
+  if (status === 'ask') {
+    return (
+      <div className="eyecam-consent">
+        <h3>👁 Medusa&apos;s rules</h3>
+        <p>
+          Your camera checks whether your <b>eyes are open</b> while she watches.
+          Video never leaves your phone — only &quot;open or closed&quot; does.
+        </p>
+        <button
+          className="yes"
+          onClick={() => {
+            remember('yes');
+            setStatus('starting');
+          }}
+        >
+          Use my camera
+        </button>
+        <button
+          className="no"
+          onClick={() => {
+            remember('no');
+            setStatus('off');
+          }}
+        >
+          Play classic rules
+        </button>
+      </div>
+    );
+  }
+  if (status === 'off' || status === 'failed') {
+    return (
+      <div className="eyecam-chip">
+        📷 {status === 'failed' ? 'camera unavailable — ' : ''}classic freeze rules
+      </div>
+    );
+  }
+  return (
+    <div className="eyecam" ref={previewRef}>
+      <span className="eyecam-state">{eyes.seen ? (eyes.open ? '👁' : '😑') : '❔'}</span>
+    </div>
+  );
 }
 
 const BUZZ_PATTERNS: Record<BuzzType, number[]> = {
@@ -487,10 +606,13 @@ export function Play() {
           }}
           onHold={() => sendInput({ t: 'ping' })}
         />
+        {me.eyeMode && <MedusaEyeCam />}
         <div className="controller-hud">
           <div className="big-num" style={{ opacity: 0.25 }}>{num}</div>
           <div className="hint">
-            TAP to run · swipe to dodge pits · watch the big screen — FREEZE when she turns!
+            {me.eyeMode
+              ? 'TAP to run · swipe to dodge · CLOSE YOUR EYES when she turns — brave runners keep moving blind!'
+              : 'TAP to run · swipe to dodge pits · watch the big screen — FREEZE when she turns!'}
           </div>
           <div className="hint" style={{ opacity: 0.7 }}>
             Press &amp; hold to make your runner wave 👋

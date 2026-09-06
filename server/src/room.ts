@@ -51,7 +51,12 @@ export class Room {
   private phase: RoomPhase = 'lobby';
   private gameId: GameId | null = null;
   private game: GameModule | null = null;
-  private options: RoomOptions = { rotation: false, puzzleW: 2, puzzleH: 2 };
+  private options: RoomOptions = {
+    rotation: false,
+    puzzleW: 2,
+    puzzleH: 2,
+    medusaEyes: false,
+  };
   private readonly images = new Map<string, Buffer>(); // insertion order = upload order
   private nextSlot = 1;
   private botTicker: ReturnType<typeof setInterval> | null = null;
@@ -252,6 +257,7 @@ export class Room {
     if (!options || typeof options !== 'object') return;
     const o = options as Partial<RoomOptions>;
     if (typeof o.rotation === 'boolean') this.options.rotation = o.rotation;
+    if (typeof o.medusaEyes === 'boolean') this.options.medusaEyes = o.medusaEyes;
     const clampDim = (v: unknown, fallback: number) =>
       typeof v === 'number' && Number.isFinite(v)
         ? Math.min(MAX_PUZZLE_DIM, Math.max(MIN_PUZZLE_DIM, Math.trunc(v)))

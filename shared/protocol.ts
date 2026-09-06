@@ -17,6 +17,9 @@ export interface RoomOptions {
   rotation: boolean; // Team Puzzles: require correct piece orientation
   puzzleW: number; // Team Puzzles: puzzle width in cells (team size = W*H)
   puzzleH: number; // Team Puzzles: puzzle height in cells
+  // Medusa: front-camera eye mode — looking at her during red petrifies you,
+  // but eyes-closed players may keep moving (on-device detection only).
+  medusaEyes: boolean;
 }
 
 export interface RoomImageInfo {
@@ -120,9 +123,15 @@ export const MEDUSA_STONE = 1;
 export const MEDUSA_FINISHED = 2;
 export const MEDUSA_FALLEN = 3;
 
-// [slot, col, lane, state] — col 0 = start edge (left), col length-1 = the
-// finish column at Medusa's feet (right); lane = depth position on screen.
-export type MedusaPlayerTuple = [number, number, number, number];
+// Eye flag in the player tuple
+export const MEDUSA_EYES_CLASSIC = -1; // no camera / stale — freeze rules
+export const MEDUSA_EYES_OPEN = 0;
+export const MEDUSA_EYES_CLOSED = 1;
+
+// [slot, col, lane, state, eyes] — col 0 = start edge (left), col length-1 =
+// the finish column at Medusa's feet (right); lane = depth position on
+// screen; eyes = MEDUSA_EYES_* (always CLASSIC when eye mode is off).
+export type MedusaPlayerTuple = [number, number, number, number, number];
 
 export interface MedusaSnapshot {
   kind: 'medusa';
@@ -172,6 +181,7 @@ export interface MeState {
   medusaState?: 'running' | 'stone' | 'finished' | 'fallen';
   col?: number; // current progress column
   fieldLength?: number;
+  eyeMode?: boolean; // room has eye mode on — the phone should arm its camera
 }
 
 export type BuzzType = 'bumped' | 'eliminated' | 'locked' | 'go';
@@ -208,7 +218,10 @@ export type InputPayload =
   | { t: 'rot' } // Puzzle: tap to rotate
   | { t: 'touch'; down: boolean } // Puzzle: finger on/off (drives glow)
   | { t: 'hop'; d: 'f' | 'l' | 'r' | 'b' } // Medusa: hop forward/left/right/back
-  | { t: 'ping' }; // Medusa: cosmetic "find me" beacon (always safe)
+  | { t: 'ping' } // Medusa: cosmetic "find me" beacon (always safe)
+  // Medusa eye mode: on-device detection result — open/closed + whether a
+  // face is currently visible. Sent on change plus a ~500ms heartbeat.
+  | { t: 'eyes'; open: boolean; seen: boolean };
 
 export interface HostStartRequest {
   game: GameId;
