@@ -4,10 +4,32 @@
 // Run with: npx tsx test/unit.ts   (also runs as part of `npm run smoke`)
 
 import assert from 'node:assert/strict';
-import type { StageSnapshot } from '../../shared/protocol';
+import {
+  NPC_CARRIED,
+  NPC_CRUSHED,
+  NPC_SAVED,
+  NPC_WAITING,
+  TETRIS_ALIVE,
+  TETRIS_DROP_DUR,
+  TETRIS_OUT,
+  TETRIS_REST_DUR,
+  TETRIS_RISE_DUR,
+  type StageSnapshot,
+  type TetrisSnapshot,
+} from '../../shared/protocol';
+import { TETRIS_ISO_DIR, groundToScreenDir, screenToGround } from '../../shared/iso';
+import { HumanTetris } from '../src/games/humanTetris';
 import { Medusa } from '../src/games/medusa';
 import { cellKey, generateField } from '../src/games/medusaField';
 import { TeamPuzzles } from '../src/games/teamPuzzles';
+import {
+  generateShape,
+  shapeCellCount,
+  shapeCells,
+  shapeConnected,
+  shapeContains,
+  shapeHoles,
+} from '../src/games/tetrisShapes';
 import type { GameCtx } from '../src/games/types';
 
 interface Ctl {
@@ -725,5 +747,273 @@ console.log('unit: medusa crumbling ground OK');
   }
 }
 console.log('unit: medusa v2 gaze meter OK');
+
+// ---------------------------------------------------------------------------
+// Human Tetris
+// ---------------------------------------------------------------------------
+
+// (a) Shapes: always 4-connected, always big enough, always clear of the
+// field edge, and — the point of the game — usually with sealed holes.
+{
+  let withHoles = 0;
+  let samples = 0;
+  for (const [fieldW, fieldD, minCells] of [
+    [16, 10, 4],
+    [16, 10, 9],
+    [25, 16, 16],
+    [34, 22, 40],
+    [14, 9, 3],
+    [14, 9, 60], // more than fits — must clamp to the field, never throw
+  ] as const) {
+    for (let seed = 0; seed < 40; seed++) {
+      const shape = generateShape(fieldW, fieldD, minCells);
+      const cap = (fieldW - 2) * (fieldD - 2);
+      assert.ok(
+        shapeCellCount(shape) >= Math.min(minCells, cap),
+        `${fieldW}x${fieldD}/${minCells}: only ${shapeCellCount(shape)} cells`,
+      );
+      assert.ok(shapeConnected(shape), `${fieldW}x${fieldD}/${minCells}: disconnected shape`);
+      assert.ok(shape.x0 >= 1 && shape.z0 >= 1, 'one-cell margin at the near edges');
+      assert.ok(shape.x0 + shape.w <= fieldW - 1, 'one-cell margin at the far x edge');
+      assert.ok(shape.z0 + shape.h <= fieldD - 1, 'one-cell margin at the far z edge');
+      assert.equal(shape.rows.length, shape.h);
+      for (const row of shape.rows) assert.equal(row.length, shape.w);
+      // Trimmed: every border row/column of the box holds a cell.
+      assert.ok(shape.rows[0].includes('1') && shape.rows[shape.h - 1].includes('1'));
+      assert.ok(shape.rows.some((r) => r[0] === '1') && shape.rows.some((r) => r[shape.w - 1] === '1'));
+      if (minCells >= 9 && minCells <= cap) {
+        samples++;
+        if (shapeHoles(shape) > 0) withHoles++;
+      }
+    }
+  }
+  assert.ok(withHoles / samples > 0.6, `holes are rare: ${withHoles}/${samples}`);
+
+  // Continuous containment follows the cell mask exactly.
+  const shape = { x0: 3, z0: 2, w: 3, h: 2, rows: ['101', '111'] };
+  assert.ok(shapeContains(shape, 3.5, 2.5));
+  assert.ok(!shapeContains(shape, 4.5, 2.5), 'the hole cell is outside');
+  assert.ok(shapeContains(shape, 4.5, 3.5));
+  assert.ok(shapeContains(shape, 5.99, 3.99), 'up to the far cell edge');
+  assert.ok(!shapeContains(shape, 6.0, 3.5), 'past the far edge');
+  assert.ok(!shapeContains(shape, 2.99, 2.5));
+  assert.equal(shapeCells(shape).length, 5);
+  assert.equal(shapeHoles({ x0: 0, z0: 0, w: 3, h: 3, rows: ['111', '101', '111'] }), 1);
+  assert.equal(shapeHoles({ x0: 0, z0: 0, w: 3, h: 3, rows: ['111', '100', '111'] }), 0, 'a bay is not a hole');
+}
+console.log('unit: tetris shapes (connected, sized, holey) OK');
+
+// (b) Joystick mapping: a thumb push comes back as the ground direction it
+// meant, at the same magnitude, whatever the iso angle.
+{
+  for (const [wx, wz] of [[1, 0], [0, 1], [-1, 0], [0, -1], [0.6, -0.8]] as const) {
+    const s = groundToScreenDir(TETRIS_ISO_DIR, wx, wz);
+    const g = screenToGround(TETRIS_ISO_DIR, s.x * 0.5, s.y * 0.5);
+    const len = Math.hypot(g.x, g.z);
+    assert.ok(Math.abs(len - 0.5) < 1e-6, `magnitude kept (${len})`);
+    assert.ok(Math.abs(g.x / len - wx) < 1e-6 && Math.abs(g.z / len - wz) < 1e-6, 'direction kept');
+  }
+  // Screen "up" is mostly world -z (away from the camera) with the camera
+  // sitting on the +z side.
+  const up = screenToGround(TETRIS_ISO_DIR, 0, -1);
+  assert.ok(up.z < -0.5, `screen up → world -z (${up.z})`);
+  assert.deepEqual(screenToGround(TETRIS_ISO_DIR, 0, 0), { x: 0, z: 0 });
+}
+console.log('unit: tetris joystick ↔ iso mapping OK');
+
+// (c) Round flow: outside = flattened, carried NPCs live or die with their
+// carrier, the loss budget ends the game, timers shorten, movement freezes
+// while the wall is down.
+{
+  const buzzes: [number, string][] = [];
+  let snap: TetrisSnapshot | null = null;
+  const n = 6;
+  const ctx: GameCtx = {
+    slots: () =>
+      Array.from({ length: n }, (_, i) => ({ slot: i + 1, name: `P${i + 1}`, color: 'red' })),
+    options: { rotation: false, puzzleW: 2, puzzleH: 2, medusaEyes: false },
+    isBot: () => false,
+    imageIds: () => [],
+    emitStage: (s) => {
+      snap = s as TetrisSnapshot;
+    },
+    emitMe: () => {},
+    buzz: (slot, type) => buzzes.push([slot, type]),
+    send: () => {},
+  };
+  const game = new HumanTetris(ctx);
+  game.start();
+  game.dispose();
+  const it = game as any;
+  const tick = (secs: number) => {
+    for (let i = 0; i < Math.round(secs * 20); i++) it.tick(1 / 20);
+  };
+  const cells = () => shapeCells(it.shape);
+  const putInside = (slot: number, i = 0) => {
+    const [cx, cz] = cells()[i % cells().length];
+    const r = it.runners.get(slot);
+    r.x = cx + 0.5;
+    r.z = cz + 0.5;
+  };
+  const putOutside = (slot: number) => {
+    const r = it.runners.get(slot);
+    // A corner is always outside: shapes keep a one-cell margin.
+    r.x = 0.4;
+    r.z = 0.4;
+    assert.ok(!shapeContains(it.shape, r.x, r.z));
+  };
+
+  tick(3.1); // countdown → play → round 1
+  assert.equal(it.phase, 'play');
+  assert.equal(it.round, 1);
+  assert.equal(it.roundPhase, 'form');
+  assert.ok(it.shape, 'a shape appears with the round');
+  assert.equal(it.lossBudget, 3, '6 players → budget of 3');
+  const t1 = it.timeLimit;
+  assert.ok(shapeCellCount(it.shape) >= 3, 'room for the crowd');
+  assert.equal(it.npcs.size, 0, 'no NPCs in round 1');
+
+  // Joystick: screen-space push moves the runner on the ground.
+  {
+    const r = it.runners.get(1);
+    r.x = 8;
+    r.z = 5;
+    const s = groundToScreenDir(TETRIS_ISO_DIR, 1, 0);
+    game.input(1, { t: 'joy', x: s.x, y: s.y });
+    tick(0.5);
+    assert.ok(r.x > 8.8, `joystick moves along world +x (${r.x})`);
+    assert.ok(Math.abs(r.z - 5) < 0.05, 'and not sideways');
+    game.input(1, { t: 'joy', x: 0, y: 0 });
+    tick(0.5);
+  }
+
+  // Round 1 drop: 1..4 inside, 5 and 6 outside.
+  for (const slot of [1, 2, 3, 4]) putInside(slot, slot);
+  putOutside(5);
+  putOutside(6);
+  const r6 = it.runners.get(6);
+  const s6 = groundToScreenDir(TETRIS_ISO_DIR, 0, 1);
+  it.pt = it.timeLimit - 0.05;
+  tick(0.1);
+  assert.equal(it.roundPhase, 'drop', 'timer expiry drops the wall');
+  assert.equal(it.runners.get(5).state, TETRIS_OUT, 'outside → flattened');
+  assert.equal(it.runners.get(6).state, TETRIS_OUT);
+  assert.equal(it.runners.get(1).state, TETRIS_ALIVE, 'inside → fine');
+  assert.equal(it.losses, 2);
+  assert.deepEqual(it.lastCrushed, [[5, 6], []]);
+  assert.ok(buzzes.some(([s, t]) => s === 5 && t === 'eliminated'));
+  // Movement is frozen while the wall is down.
+  const r1 = it.runners.get(1);
+  const before = [r1.x, r1.z];
+  game.input(1, { t: 'joy', x: s6.x, y: s6.y });
+  game.input(6, { t: 'joy', x: s6.x, y: s6.y }); // the flattened can't move either
+  const r6before = [r6.x, r6.z];
+  tick(TETRIS_DROP_DUR + 0.05);
+  assert.equal(it.roundPhase, 'rest');
+  tick(0.5);
+  assert.deepEqual([r1.x, r1.z], before, 'frozen through drop + rest');
+  tick(TETRIS_REST_DUR);
+  assert.equal(it.roundPhase, 'rise', 'the wall lifts');
+  assert.equal(it.cleared, 1, 'round 1 cleared (losses under budget)');
+  tick(0.3);
+  assert.ok(r1.z > before[1], 'movement resumes as the wall rises');
+  tick(TETRIS_RISE_DUR);
+  assert.equal(it.round, 2, 'next shape');
+  assert.equal(it.roundPhase, 'form');
+  assert.ok(it.timeLimit < t1, 'timer shortens');
+  game.input(1, { t: 'joy', x: 0, y: 0 });
+  tick(0.1);
+  assert.deepEqual([r6.x, r6.z], r6before, 'flattened players never move again');
+
+  // Round 2: an NPC turned up outside the shape; carrying is one-per-player.
+  assert.ok(it.npcs.size >= 1, 'NPCs appear from round 2');
+  const npc: any = [...it.npcs.values()][0];
+  assert.equal(npc.state, NPC_WAITING);
+  assert.ok(!shapeContains(it.shape, npc.x, npc.z), 'NPCs spawn outside the safe zone');
+  const r2 = it.runners.get(2);
+  const r3 = it.runners.get(3);
+  r2.x = npc.x;
+  r2.z = npc.z;
+  r3.x = npc.x + 0.3;
+  r3.z = npc.z;
+  tick(0.05);
+  assert.equal(npc.state, NPC_CARRIED, 'touching a waiting NPC picks it up');
+  const carrier = it.runners.get(npc.carrier);
+  const other = npc.carrier === 2 ? r3 : r2;
+  assert.equal(carrier.carrying, npc.id);
+  assert.equal(other.carrying, 0, 'only one of them gets it');
+  assert.ok(buzzes.some(([s, t]) => s === carrier.slot && t === 'pickup'));
+  // A second NPC placed under the carrier is ignored — one per player.
+  it.npcs.set(99, { id: 99, x: carrier.x, z: carrier.z, state: NPC_WAITING, carrier: 0 });
+  other.x = 0.4;
+  other.z = 0.4;
+  tick(0.05);
+  assert.equal(it.npcs.get(99).state, NPC_WAITING, 'a carrier cannot take a second NPC');
+  it.npcs.delete(99);
+  // The NPC rides along.
+  carrier.x = 3;
+  carrier.z = 3;
+  tick(0.05);
+  assert.ok(Math.abs(npc.x - carrier.x) < 0.01 && Math.abs(npc.z - carrier.z) < 0.01, 'carried NPC follows');
+  // Carry it inside; leave a second, waiting NPC stranded outside.
+  it.npcs.set(77, { id: 77, x: 0.5, z: 0.5, state: NPC_WAITING, carrier: 0 });
+  for (const slot of [1, 2, 3, 4]) putInside(slot, slot);
+  const lossesBefore = it.losses;
+  it.pt = it.timeLimit - 0.05;
+  tick(0.1);
+  assert.equal(npc.state, NPC_SAVED, 'carried inside → rescued');
+  assert.equal(it.rescued, 1);
+  assert.equal(carrier.carrying, 0, 'hands free again');
+  assert.equal(it.npcs.get(77).state, NPC_CRUSHED, 'stranded outside → crushed');
+  assert.equal(it.losses, lossesBefore + 1, 'a crushed NPC counts toward the loss budget');
+  assert.deepEqual(it.lastCrushed, [[], [77]]);
+  assert.ok(buzzes.some(([s, t]) => s === carrier.slot && t === 'rescued'));
+  assert.equal(it.losses, 3, 'budget reached');
+  tick(TETRIS_DROP_DUR + TETRIS_REST_DUR + 0.1);
+  assert.equal(it.phase, 'over', 'losses at budget → the crowd loses');
+  assert.equal(it.cleared, 1, 'the losing round is not cleared');
+  assert.equal((game.personal(1) as any).gameOver, true);
+  assert.equal((game.personal(5) as any).tetrisState, 'out');
+  assert.equal((game.personal(1) as any).tetrisState, 'alive');
+  const last = snap as unknown as TetrisSnapshot;
+  assert.equal(last.kind, 'tetris');
+  assert.equal(last.phase, 'over');
+  assert.equal(last.aliveCount, 4);
+  assert.equal(last.losses, 3);
+  assert.equal(last.rescued, 1);
+
+  // A carried NPC dies with a flattened carrier (both count).
+  {
+    let snap2: TetrisSnapshot | null = null;
+    const ctx2: GameCtx = {
+      ...ctx,
+      slots: () => [{ slot: 1, name: 'A', color: 'red' }, { slot: 2, name: 'B', color: 'red' }],
+      emitStage: (s) => {
+        snap2 = s as TetrisSnapshot;
+      },
+    };
+    const g2 = new HumanTetris(ctx2);
+    g2.start();
+    g2.dispose();
+    const i2 = g2 as any;
+    for (let i = 0; i < 62; i++) i2.tick(1 / 20);
+    assert.equal(i2.phase, 'play');
+    i2.npcs.set(5, { id: 5, x: 0.4, z: 0.4, state: NPC_CARRIED, carrier: 1 });
+    i2.runners.get(1).carrying = 5;
+    i2.runners.get(1).x = 0.4;
+    i2.runners.get(1).z = 0.4;
+    const [cx, cz] = shapeCells(i2.shape)[0];
+    i2.runners.get(2).x = cx + 0.5;
+    i2.runners.get(2).z = cz + 0.5;
+    i2.pt = i2.timeLimit - 0.05;
+    i2.tick(0.1);
+    assert.equal(i2.runners.get(1).state, TETRIS_OUT);
+    assert.equal(i2.npcs.get(5).state, NPC_CRUSHED, 'the rider goes down with the carrier');
+    assert.equal(i2.losses, 2);
+    assert.deepEqual(i2.lastCrushed, [[1], [5]]);
+    void snap2;
+  }
+}
+console.log('unit: tetris rounds (drop, carry, rescue, loss budget) OK');
 
 console.log('\nUNIT PASS ✅');

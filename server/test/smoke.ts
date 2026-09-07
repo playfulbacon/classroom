@@ -8,16 +8,22 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { io, type Socket } from 'socket.io-client';
-import type {
-  JoinResponse,
-  LosSnapshot,
-  MedusaPulseMsg,
-  MedusaSnapshot,
-  MeState,
-  PuzzleSnapshot,
-  RoomState,
-  StageSnapshot,
+import {
+  NPC_WAITING,
+  TETRIS_ALIVE,
+  TETRIS_OUT,
+  type JoinResponse,
+  type LosSnapshot,
+  type MedusaPulseMsg,
+  type MedusaSnapshot,
+  type MeState,
+  type PuzzleSnapshot,
+  type RoomState,
+  type StageSnapshot,
+  type TetrisPulseMsg,
+  type TetrisSnapshot,
 } from '../../shared/protocol';
+import { TETRIS_ISO_DIR, groundToScreenDir } from '../../shared/iso';
 
 const PORT = 4123;
 const BASE_URL = `http://localhost:${PORT}`;
@@ -727,6 +733,125 @@ async function main() {
     bots.every((b) => b.me?.phase === 'lobby') ? true : null,
   );
 
+  // ==========================================================================
+  // Game 4: Human Tetris
+  // ==========================================================================
+  // Socket players steer (screen-space joysticks, like thumbs) into the
+  // shape; one hides in a corner and must be flattened; one plays hero and
+  // must carry an NPC to safety. Phones get the personal SAFE/OUTSIDE pulse.
+  let tzPulses = 0;
+  let tzInsideSeen = false;
+  let tzCarrySeen = false;
+  bots[2].socket.on('pulse', (m: TetrisPulseMsg) => {
+    if (!Array.isArray(m)) return;
+    tzPulses++;
+    if (m[0] === 1 && m[2] === 0) tzInsideSeen = true;
+  });
+  stage.emit('host:start', { game: 'tetris' });
+  await waitFor('tetris play phase', 8000, () =>
+    latestSnapshot?.kind === 'tetris' && latestSnapshot.phase === 'play' ? true : null,
+  );
+  const tz0 = latestSnapshot as unknown as TetrisSnapshot;
+  console.log(
+    `tetris: field ${tz0.fieldW}x${tz0.fieldD}, budget ${tz0.lossBudget}, round 1 timer ${tz0.timeLimit}s, ` +
+      `shape ${tz0.shape?.w}x${tz0.shape?.h} at (${tz0.shape?.x0},${tz0.shape?.z0})`,
+  );
+  if (!tz0.shape) fail('round 1 has no shape');
+  const cornerHider = bots[0].slot; // walks to the corner: flattened in round 1
+  const hero = bots[1].slot; // fetches the first NPC it sees
+  const timers = new Map<number, number>();
+  const joyToward = (b: Bot, x: number, z: number, tx: number, tz: number) => {
+    const dx = tx - x;
+    const dz = tz - z;
+    if (Math.hypot(dx, dz) < 0.1) {
+      b.socket.emit('input', { t: 'joy', x: 0, y: 0 });
+      return;
+    }
+    const s = groundToScreenDir(TETRIS_ISO_DIR, dx, dz);
+    b.socket.emit('input', { t: 'joy', x: s.x, y: s.y });
+  };
+  const tetrisDriver = setInterval(() => {
+    const s = latestSnapshot as TetrisSnapshot | null;
+    if (!s || s.kind !== 'tetris' || s.phase !== 'play' || !s.shape) return;
+    timers.set(s.round, s.timeLimit);
+    const cells: [number, number][] = [];
+    for (let r = 0; r < s.shape.h; r++) {
+      for (let c = 0; c < s.shape.w; c++) {
+        if (s.shape.rows[r][c] === '1') cells.push([s.shape.x0 + c + 0.5, s.shape.z0 + r + 0.5]);
+      }
+    }
+    const pos = new Map(s.players.map((p) => [p[0], p] as const));
+    bots.forEach((b, i) => {
+      const p = pos.get(b.slot);
+      if (!p || p[3] !== TETRIS_ALIVE) return;
+      const [, x, z, , carrying] = p;
+      if (b.slot === cornerHider) {
+        joyToward(b, x, z, 0.5, 0.5);
+        return;
+      }
+      if (b.slot === hero && !carrying) {
+        const npc = s.npcs.find((n) => n[3] === NPC_WAITING);
+        if (npc) {
+          joyToward(b, x, z, npc[1], npc[2]);
+          return;
+        }
+      }
+      if (carrying) tzCarrySeen = true;
+      // Spread the crowd over the shape by slot.
+      const [tx, tzz] = cells[i % cells.length];
+      joyToward(b, x, z, tx, tzz);
+    });
+  }, 120);
+  await waitFor('the phone pulse to report INSIDE during a round', 20000, () =>
+    tzInsideSeen ? true : null,
+  );
+  const tzRound1 = await waitFor('round 1 to drop', 25000, () => {
+    const s = latestSnapshot as TetrisSnapshot | null;
+    return s?.kind === 'tetris' && s.round === 1 && s.roundPhase !== 'form' ? s : null;
+  });
+  {
+    const hider = tzRound1.players.find((p) => p[0] === cornerHider);
+    if (!hider || hider[3] !== TETRIS_OUT) fail('the corner hider was not flattened');
+    if (!tzRound1.lastCrushed[0].includes(cornerHider)) fail('lastCrushed misses the hider');
+    const inside = tzRound1.players.filter((p) => p[3] === TETRIS_ALIVE).length;
+    if (inside < NUM_PLAYERS - 3) fail(`only ${inside} players made it inside in round 1`);
+    console.log(`tetris: round 1 — ${inside} inside, hider #${cornerHider} flattened`);
+  }
+  await waitFor("the hider's phone to learn its fate", 5000, () =>
+    bots[0].me?.tetrisState === 'out' ? true : null,
+  );
+  await waitFor('round 1 to clear and round 2 to start', 15000, () => {
+    const s = latestSnapshot as TetrisSnapshot | null;
+    return s?.kind === 'tetris' && s.round >= 2 && s.cleared >= 1 ? true : null;
+  });
+  {
+    const s = latestSnapshot as unknown as TetrisSnapshot;
+    if (s.npcs.length < 1) fail('no NPC appeared in round 2');
+    if (s.timeLimit >= tz0.timeLimit) fail('the timer did not shorten');
+    if (tzPulses < 10) fail(`only ${tzPulses} tetris pulses reached the phone`);
+  }
+  await waitFor('the hero to rescue an NPC', 60000, () => {
+    const s = latestSnapshot as TetrisSnapshot | null;
+    if (!s || s.kind !== 'tetris') return null;
+    if (s.phase === 'over') fail(`the crowd lost before any rescue (cleared ${s.cleared})`);
+    return s.rescued >= 1 ? true : null;
+  });
+  if (!tzCarrySeen) fail('the hero never showed as carrying');
+  await waitFor("the hero's phone to know it carried", 3000, () =>
+    bots[1].me?.game === 'tetris' ? true : null,
+  );
+  clearInterval(tetrisDriver);
+  {
+    const s = latestSnapshot as unknown as TetrisSnapshot;
+    console.log(
+      `tetris: ${s.cleared} rounds cleared, ${s.rescued} rescued, ${s.losses}/${s.lossBudget} losses, timers ${[...timers.values()].join('→')}`,
+    );
+  }
+  stage.emit('host:lobby');
+  await waitFor('lobby after tetris', 5000, () =>
+    bots.every((b) => b.me?.phase === 'lobby') ? true : null,
+  );
+
   // A room of ONLY fake players must solve Team Puzzles by itself.
   const stage2 = connect();
   let room2: RoomState | null = null;
@@ -778,6 +903,20 @@ async function main() {
   const botStones = botMedusa.players.filter((p) => p[3] === 1).length;
   console.log(
     `bots: medusa round complete — ${botMedusa.finished.length} escaped, ${botStones} statues`,
+  );
+
+  // ...and hold a Human Tetris crowd together unaided: the fake players
+  // must clear at least two rounds before the wall wins.
+  stage2.emit('host:start', { game: 'tetris' });
+  const botTetris = await waitFor('bots-only tetris to clear two rounds', 80000, () => {
+    const s = snap2 as TetrisSnapshot | null;
+    if (!s || s.kind !== 'tetris') return null;
+    if (s.phase === 'over' && s.cleared < 2) fail(`bots lost tetris after ${s.cleared} rounds`);
+    return s.cleared >= 2 ? s : null;
+  });
+  console.log(
+    `bots: tetris — cleared ${botTetris.cleared} rounds, ${botTetris.rescued} rescued, ` +
+      `${botTetris.losses}/${botTetris.lossBudget} lost`,
   );
 
   // ==========================================================================

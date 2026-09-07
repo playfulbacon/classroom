@@ -1,7 +1,7 @@
 // Shared message + state types for Classroom Arcade.
 // Imported by both the server and the client.
 
-export type GameId = 'los' | 'puzzle' | 'medusa';
+export type GameId = 'los' | 'puzzle' | 'medusa' | 'tetris';
 
 export type RoomPhase = 'lobby' | 'playing';
 
@@ -194,7 +194,80 @@ export interface MedusaPulseMsg {
   me: [number, number, number, number, number]; // [col, lane, meterQ, tier, gz]
 }
 
-export type StageSnapshot = LosSnapshot | PuzzleSnapshot | MedusaSnapshot;
+// ---------------------------------------------------------------------------
+// Human Tetris (co-op: fill the shape before the wall drops)
+// ---------------------------------------------------------------------------
+
+// One round: the shape's outline shows and the timer runs ('form'); at zero
+// the wall — the whole field EXCEPT the shape — falls from the sky ('drop'),
+// rests on the ground while the crushed are counted ('rest'), lifts back out
+// of frame ('rise'), and the next shape appears.
+export type TetrisRoundPhase = 'form' | 'drop' | 'rest' | 'rise';
+
+// Round phase timings (seconds) — the stage animates the wall from these.
+export const TETRIS_DROP_DUR = 0.8;
+export const TETRIS_REST_DUR = 1.8;
+export const TETRIS_RISE_DUR = 1.1;
+
+export const TETRIS_ALIVE = 0;
+export const TETRIS_OUT = 1;
+
+// NPC states: waiting on the field, carried by a player, rescued (was inside
+// when the wall landed — counts for the crowd), crushed (counts against it).
+export const NPC_WAITING = 0;
+export const NPC_CARRIED = 1;
+export const NPC_SAVED = 2;
+export const NPC_CRUSHED = 3;
+
+// [slot, x, z, state, carrying] — continuous field coordinates (one cell =
+// one unit, cell (cx, cz) spans [cx, cx+1) × [cz, cz+1)); carrying = id of
+// the NPC on this player's shoulders, 0 when none.
+export type TetrisPlayerTuple = [number, number, number, number, number];
+
+// [id, x, z, state, carrier] — carrier = slot carrying it (0 when none).
+export type TetrisNpcTuple = [number, number, number, number, number];
+
+// The safe zone: a mask anchored at field cell (x0, z0); rows[r][c] is '1'
+// where cell (x0 + c, z0 + r) is inside the shape. Holes are '0's fully
+// surrounded by '1's — the crowd has to flow around them.
+export interface TetrisShape {
+  x0: number;
+  z0: number;
+  w: number;
+  h: number;
+  rows: string[];
+}
+
+export interface TetrisSnapshot {
+  kind: 'tetris';
+  phase: GamePhase;
+  countdown: number;
+  round: number; // 1-based round in progress (0 during the countdown)
+  roundPhase: TetrisRoundPhase;
+  pt: number; // seconds elapsed in the current round phase
+  tLeft: number; // 'form' only: seconds until the wall drops
+  timeLimit: number; // this round's full timer
+  fieldW: number;
+  fieldD: number;
+  shape: TetrisShape | null;
+  players: TetrisPlayerTuple[];
+  npcs: TetrisNpcTuple[];
+  pings: number[]; // slots that tapped since the previous snapshot
+  cleared: number; // rounds survived so far
+  losses: number; // eliminated players + crushed NPCs
+  lossBudget: number; // losses at which the crowd loses
+  rescued: number; // NPCs carried to safety so far
+  aliveCount: number;
+  // 'rest' / 'over': who the last wall took — [slots, npc ids]
+  lastCrushed: [number[], number[]];
+}
+
+// Personal pulse ('pulse' event) ~5Hz to each alive phone through a round:
+// [inside 0/1, seconds left (form) else 0, round phase 0 form/1 drop/2 rest/
+// 3 rise, carrying 0/1]. The phone floods its screen with SAFE / OUTSIDE.
+export type TetrisPulseMsg = [number, number, number, number];
+
+export type StageSnapshot = LosSnapshot | PuzzleSnapshot | MedusaSnapshot | TetrisSnapshot;
 
 // ---------------------------------------------------------------------------
 // Personal state pushed to each phone ('me' event)
@@ -224,6 +297,12 @@ export interface MeState {
   fieldLength?: number;
   eyeMode?: boolean; // room has eye mode on — the phone should arm its camera
   tier?: number; // stone tier 0..2 (how far the stone has crept)
+  // Human Tetris
+  tetrisState?: 'alive' | 'out';
+  round?: number; // round in progress (or the round that ended the game)
+  carrying?: boolean; // an NPC is on your shoulders
+  cleared?: number; // rounds the crowd survived (final tally when over)
+  gameOver?: boolean; // the crowd lost (or the host ended it)
 }
 
 export type BuzzType =
@@ -233,7 +312,10 @@ export type BuzzType =
   | 'go'
   | 'creep'
   | 'warn' // Medusa is about to turn toward the field — shut your eyes
-  | 'clear'; // she's turned away — eyes open, all clear
+  | 'clear' // she's turned away — eyes open, all clear
+  | 'pickup' // Human Tetris: you scooped up an NPC
+  | 'rescued' // Human Tetris: the NPC you carried made it
+  | 'hurry'; // Human Tetris: seconds left and you're OUTSIDE the shape
 
 // ---------------------------------------------------------------------------
 // Socket event payloads
@@ -261,13 +343,13 @@ export interface StageAttachResponse {
 }
 
 export type InputPayload =
-  | { t: 'joy'; x: number; y: number } // LOS: held joystick vector, |v| <= 1
+  | { t: 'joy'; x: number; y: number } // LOS + Tetris: held joystick vector, |v| <= 1 (screen space)
   | { t: 'dash'; x: number; y: number } // LOS: flick dash, unit direction
   | { t: 'dir'; x: number; y: number } // Puzzle: held movement vector
   | { t: 'rot' } // Puzzle: tap to rotate
   | { t: 'touch'; down: boolean } // Puzzle: finger on/off (drives glow)
   | { t: 'hop'; d: 'f' | 'l' | 'r' | 'b' } // Medusa: hop forward/left/right/back
-  | { t: 'ping' } // Medusa: cosmetic "find me" beacon (always safe)
+  | { t: 'ping' } // Medusa + Tetris: cosmetic "find me" beacon (always safe)
   // Medusa eye mode: on-device eyes-open detection — a GZ_* state code plus
   // a 0..1 confidence. Sent on change plus a ~250ms heartbeat.
   | { t: 'gaze'; s: 1 | 2 | 3; c: number };
@@ -283,6 +365,7 @@ export interface HostStartRequest {
 //  'me'       MeState          — one phone
 //  'buzz'     BuzzType         — one phone (vibration cue)
 //  'pulse'    MedusaPulseMsg   — one phone, ~5Hz through an eye-mode round
+//             TetrisPulseMsg   — one phone, ~5Hz through a Human Tetris game
 // Client → server:
 //  'stage:create' (cb: {code, room})
 //  'stage:attach' ({code}, cb: StageAttachResponse)

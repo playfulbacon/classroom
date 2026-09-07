@@ -7,6 +7,19 @@
 
 import * as THREE from 'three';
 import type { MedusaSnapshot } from '../../../shared/protocol';
+import { MEDUSA_ISO_DIR } from '../../../shared/iso';
+import {
+  AVATAR_BODY_Y,
+  addLights,
+  buildAvatar,
+  headTint,
+  parseColor,
+  subCellOffset,
+} from './avatar';
+
+// The avatar (body, head, shadow, colours) is shared with the other 3D
+// games — see avatar.ts. Medusa dresses it up below.
+export { addLights, parseColor, subCellOffset };
 
 export const HOP_DUR = 0.2;
 
@@ -20,8 +33,9 @@ export const FERRY_TOP = 0.16;
 
 export const SCENE_BG = 0x10142a;
 
-// The one isometric viewing direction for the stage camera.
-export const ISO_DIR = new THREE.Vector3(-0.62, 0.85, 1).normalize();
+// The one isometric viewing direction for the stage camera (shared with the
+// phone's swipe mapping via shared/iso.ts).
+export const ISO_DIR = new THREE.Vector3(MEDUSA_ISO_DIR.x, MEDUSA_ISO_DIR.y, MEDUSA_ISO_DIR.z);
 
 export interface Avatar {
   slot: number;
@@ -85,35 +99,6 @@ export function layoutFromSnapshot(s: MedusaSnapshot): MedusaFieldLayout {
     platforms: s.platforms.map(([id, lane, c0, c1, pos]) => ({ id, lane, c0, c1, pos })),
     crumble: s.crumble,
   };
-}
-
-// Player colors use modern space-separated hsl() syntax, which THREE.Color
-// cannot parse — convert explicitly.
-export function parseColor(css: string): THREE.Color {
-  const m = /hsl\(\s*([\d.]+)[\s,]+([\d.]+)%[\s,]+([\d.]+)%\s*\)/.exec(css);
-  if (m) {
-    return new THREE.Color().setHSL(
-      Number(m[1]) / 360,
-      Number(m[2]) / 100,
-      Number(m[3]) / 100,
-      THREE.SRGBColorSpace,
-    );
-  }
-  return new THREE.Color(css);
-}
-
-export function subCellOffset(slot: number): [number, number] {
-  // Deterministic scatter inside a cell so piled players read as a cluster.
-  const a = ((slot * 2654435761) >>> 0) / 4294967296;
-  const b = (((slot * 40503 + 12345) >>> 0) & 0xffff) / 65536;
-  return [(a - 0.5) * 0.56, (b - 0.5) * 0.56];
-}
-
-export function addLights(scene: THREE.Scene) {
-  scene.add(new THREE.HemisphereLight(0xbcc7ff, 0x2a2f45, 0.95));
-  const sun = new THREE.DirectionalLight(0xfff2d8, 1.15);
-  sun.position.set(-18, 30, 14);
-  scene.add(sun);
 }
 
 // ------------------------------------------------------------------ field
@@ -287,27 +272,7 @@ const stoneMat = new THREE.MeshLambertMaterial({ color: 0x8d8d99 });
 const stoneDark = new THREE.MeshLambertMaterial({ color: 0x6f6f7a });
 
 export function makeAvatar(slot: number, color: string, parent: THREE.Object3D): Avatar {
-  const group = new THREE.Group();
-  const base = parseColor(color);
-  const bodyMat = new THREE.MeshLambertMaterial({ color: base });
-  const headMat = new THREE.MeshLambertMaterial({
-    color: base.clone().lerp(new THREE.Color('#ffffff'), 0.35),
-  });
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.3, 3, 8), bodyMat);
-  body.position.y = 0.42;
-  body.name = 'body';
-  group.add(body);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 10, 8), headMat);
-  head.position.y = 0.84;
-  head.name = 'head';
-  group.add(head);
-  const shadow = new THREE.Mesh(
-    new THREE.CircleGeometry(0.28, 12),
-    new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3 }),
-  );
-  shadow.rotation.x = -Math.PI / 2;
-  shadow.position.y = 0.012;
-  group.add(shadow);
+  const { group, bodyMat, headMat } = buildAvatar(color, parent);
   // Eye-mode blindfold band: shown while this player runs eyes-closed.
   const blindfold = new THREE.Mesh(
     new THREE.BoxGeometry(0.4, 0.09, 0.4),
@@ -328,7 +293,6 @@ export function makeAvatar(slot: number, color: string, parent: THREE.Object3D):
   stoneLegs.name = 'stone-legs';
   stoneLegs.visible = false;
   group.add(stoneLegs);
-  parent.add(group);
   return {
     slot,
     group,
@@ -366,9 +330,7 @@ export function applyTier(av: Avatar, tier: number) {
   const base = parseColor(av.color);
   const gray = new THREE.Color(0x8d8d99);
   av.bodyMat.color.copy(base.clone().lerp(gray, tier * 0.38));
-  av.headMat.color.copy(
-    base.clone().lerp(new THREE.Color('#ffffff'), 0.35).lerp(gray, tier * 0.38),
-  );
+  av.headMat.color.copy(headTint(base).lerp(gray, tier * 0.38));
   const feet = av.group.getObjectByName('stone-feet');
   if (feet) feet.visible = tier >= 1;
   const legs = av.group.getObjectByName('stone-legs');
@@ -426,7 +388,7 @@ export function updateAvatarMotion(av: Avatar, dt: number, clockT: number) {
     // Idle bob.
     av.bobPhase += dt * 3;
     const body = av.group.getObjectByName('body');
-    if (body) body.position.y = 0.42 + Math.sin(av.bobPhase) * 0.015;
+    if (body) body.position.y = AVATAR_BODY_Y + Math.sin(av.bobPhase) * 0.015;
   } else if (av.state === ST_STONE) {
     const since = clockT - av.stoneAt;
     if (since < 0.25) {
