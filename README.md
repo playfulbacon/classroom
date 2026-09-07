@@ -117,12 +117,18 @@ pages — plain-http LAN pages get "no mediaDevices API" no matter what you
 allow). Run:
 
 ```bash
-npm run dev:https   # dev servers with a self-signed certificate
+npm run dev:tunnel  # dev servers + a free Cloudflare quick tunnel
 ```
 
-then open the stage at `https://<your-lan-ip>:5173/stage` — the QR now encodes
-an `https://` link, and each phone just accepts the certificate warning once.
-(`localhost` on the laptop itself is always fine without this.)
+and open the stage at the printed `https://….trycloudflare.com/stage` URL —
+the QR then hands phones a real https link with a valid certificate, so
+cameras just work with no warnings (needs internet access).
+
+Fully offline alternative: `npm run dev:https` serves the LAN with a
+self-signed certificate — open `https://<your-lan-ip>:5173/stage` and each
+phone accepts the certificate warning once. (`localhost` on the laptop itself
+always works with plain `npm run dev`.) In production, deploy behind any
+HTTPS host and none of this applies.
 
 ## Production
 
