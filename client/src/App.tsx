@@ -1,4 +1,5 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { DebugCorner } from './debug';
 import { Home } from './pages/Home';
 import { Play } from './pages/Play';
 import { Stage } from './pages/Stage';
@@ -12,6 +13,7 @@ export function App() {
         <Route path="/stage" element={<Stage />} />
         <Route path="*" element={<Home />} />
       </Routes>
+      <DebugCorner />
     </BrowserRouter>
   );
 }

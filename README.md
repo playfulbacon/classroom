@@ -165,8 +165,15 @@ your machine; set `CHROMIUM_PATH` to point at a different Chromium build.
 
 `npm run dev` watches for changes: edit anything under `client/src` and the
 browser updates in place; edit `server/src` or `shared/` and the server
-restarts itself (players will need to rejoin). You only need to run
-`npm install` again when `package.json` changes.
+restarts itself (players will need to rejoin). The same applies to
+`git pull` while dev is running — new code hot-loads into open pages. You
+only need `npm install` + a dev-server restart when `package.json` or
+`vite.config.ts` changed.
+
+Phones have a 🐞 button (top-left, on every player screen): it toggles a live
+diagnostics panel — build hash first (so a stale checkout is obvious), then
+camera pipeline state, per-frame gaze-detection internals, what's being sent,
+and the server's verdict on you (meter/tier/effective state) during Medusa.
 
 ## Architecture
 

@@ -9,6 +9,7 @@ import type {
   RoomState,
 } from '../../../shared/protocol';
 import { drawFragment, getRoomImage, groupArtCanvas } from '../art';
+import { dbg } from '../debug';
 import type { GazeState, GazeTracker } from '../gaze';
 import type { ShieldRenderer3D } from '../render/shield3d';
 import { loadCreds, saveCreds, socket } from '../socket';
@@ -209,7 +210,7 @@ const GAZE_ICONS = ['🛡', '😑', '👁', '❔'] as const; // shield/closed/ca
 // your phone" calibration → tiny mirrored self-preview with a live state
 // icon. Detection runs entirely on the phone; only a {state, confidence}
 // pair is sent. Unmounting stops the camera.
-function MedusaGazeCam({ dbg }: { dbg?: React.MutableRefObject<Record<string, string>> }) {
+function MedusaGazeCam() {
   const [status, setStatus] = useState<GazeCamStatus>(() => {
     try {
       const remembered = sessionStorage.getItem('ca-eyecam');
@@ -250,10 +251,11 @@ function MedusaGazeCam({ dbg }: { dbg?: React.MutableRefObject<Record<string, st
       }
       if ('error' in result) {
         setFailDetail(result.detail);
-        if (dbg) dbg.current['cam'] = `FAILED — ${result.detail}`;
+        dbg['cam'] = `FAILED — ${result.detail}`;
         setStatus('failed');
         return;
       }
+      dbg['cam'] = 'running';
       trackerRef.current = result;
       result.video.className = 'eyecam-video';
       previewRef.current?.appendChild(result.video);
@@ -267,20 +269,20 @@ function MedusaGazeCam({ dbg }: { dbg?: React.MutableRefObject<Record<string, st
   }, [status]);
 
   // Heartbeat so the server can tell fresh reports from a dead camera —
-  // and, when the ?debug overlay is up, mirror the tracker's internals.
+  // and the moment to mirror the tracker's live internals into the 🐞 panel.
   useEffect(() => {
     if (status !== 'on' && status !== 'calibrating') return;
     const iv = setInterval(() => {
       const s = lastRef.current;
       if (s) socket.emit('input', { t: 'gaze', s: s.s, c: Math.round(s.c * 100) / 100 });
-      if (dbg && trackerRef.current) {
-        dbg.current['cam'] = status;
-        Object.assign(dbg.current, trackerRef.current.debug);
-        if (s) dbg.current['sent'] = `s=${s.s} c=${s.c.toFixed(2)}`;
+      dbg['cam'] = status;
+      if (trackerRef.current) Object.assign(dbg, trackerRef.current.debug);
+      if (s) {
+        dbg['sent'] = `${['shield', 'closed', 'caught', 'unknown'][s.s]} c=${s.c.toFixed(2)}`;
       }
     }, 250);
     return () => clearInterval(iv);
-  }, [status, dbg]);
+  }, [status]);
 
   useEffect(
     () => () => {
@@ -344,26 +346,6 @@ function MedusaGazeCam({ dbg }: { dbg?: React.MutableRefObject<Record<string, st
   );
 }
 
-// Live diagnostics for eye mode, shown when the page URL carries ?debug —
-// camera pipeline state, raw detection scores, what's being sent, and what
-// the server thinks of you (via the shield stream + me state).
-function DebugPanel({ dbgRef }: { dbgRef: React.MutableRefObject<Record<string, string>> }) {
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const iv = setInterval(() => setTick((t) => t + 1), 250);
-    return () => clearInterval(iv);
-  }, []);
-  return (
-    <div className="debug-panel">
-      {Object.entries(dbgRef.current).map(([k, v]) => (
-        <div key={k}>
-          <b>{k}</b> {v}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 const BUZZ_PATTERNS: Record<BuzzType, number[]> = {
   go: [60],
   bumped: [35],
@@ -421,27 +403,6 @@ export function Play() {
   const shieldRef = useRef<{ msg: MedusaShieldMsg; at: number } | null>(null);
   const colorsRef = useRef(new Map<number, string>());
   const lastMeterRef = useRef(0);
-  const dbgRef = useRef<Record<string, string>>({});
-  const [debugOn, setDebugOn] = useState(() => {
-    try {
-      return (
-        new URLSearchParams(window.location.search).has('debug') ||
-        localStorage.getItem('ca-debug') === '1'
-      );
-    } catch {
-      return false;
-    }
-  });
-  const toggleDebug = () => {
-    setDebugOn((v) => {
-      try {
-        localStorage.setItem('ca-debug', v ? '0' : '1');
-      } catch {
-        // fine
-      }
-      return !v;
-    });
-  };
   const [connected, setConnected] = useState(socket.connected);
   const [joinError, setJoinError] = useState('');
 
@@ -484,7 +445,7 @@ export function Play() {
     };
     const onShield = (msg: MedusaShieldMsg) => {
       shieldRef.current = { msg, at: performance.now() };
-      dbgRef.current['server'] =
+      dbg['server'] =
         `gaze=${['green', 'turning', 'RED', 'returning'][msg.g[0]]} ` +
         `meter=${msg.me[2]} tier=${msg.me[3]} ` +
         `eff=${['shield', 'closed', 'caught', 'unknown'][msg.me[4]] ?? 'classic'} ` +
@@ -775,16 +736,7 @@ export function Play() {
             selfSlot={me.playerId}
           />
         )}
-        {me.eyeMode && <MedusaGazeCam dbg={debugOn ? dbgRef : undefined} />}
-        {debugOn && <DebugPanel dbgRef={dbgRef} />}
-        <button
-          className="debug-toggle"
-          style={{ opacity: debugOn ? 1 : 0.45 }}
-          onClick={toggleDebug}
-          aria-label="Toggle debug overlay"
-        >
-          🐞
-        </button>
+        {me.eyeMode && <MedusaGazeCam />}
         <div className="controller-hud">
           <div className="big-num" style={{ opacity: 0.25 }}>{num}</div>
           <div className="hint">

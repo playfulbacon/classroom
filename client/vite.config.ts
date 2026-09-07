@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { cp } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -48,9 +49,24 @@ function mediapipeWasm(): Plugin {
 // an https:// URL, and each phone accepts the certificate warning once.
 // Plain `npm run dev` stays http for everything else. (--mode instead of an
 // env var so the script works on Windows too.)
+// Baked into the bundle for the 🐞 debug panel, so "is this phone running
+// the code I just pulled?" is answerable at a glance. (Fixed at dev-server
+// start — restart `npm run dev` after pulling to refresh it.)
+function gitVersion(): string {
+  try {
+    const opts = { stdio: ['ignore', 'pipe', 'ignore'] } as const;
+    const hash = execSync('git rev-parse --short HEAD', opts).toString().trim();
+    const dirty = execSync('git status --porcelain', opts).toString().trim() ? '*' : '';
+    return hash + dirty;
+  } catch {
+    return 'unknown';
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const useHttps = mode === 'https' || !!process.env.HTTPS;
   return {
+  define: { __APP_VERSION__: JSON.stringify(gitVersion()) },
   plugins: [react(), mediapipeWasm(), ...(useHttps ? [basicSsl()] : [])],
   build: {
     // three.js lands in a lazy chunk shared by the stage renderer (medusa3d)
