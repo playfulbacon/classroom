@@ -14,7 +14,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { chromium, type Browser } from 'playwright-core';
 import { io, type Socket } from 'socket.io-client';
-import type { PuzzleSnapshot, StageSnapshot } from '../../shared/protocol';
+import type { MedusaSnapshot, PuzzleSnapshot, StageSnapshot } from '../../shared/protocol';
 
 const PORT = 4200;
 const BASE = `http://localhost:${PORT}`;
@@ -101,6 +101,25 @@ async function main() {
 
   // Add 10 server-driven fake players from the host bar.
   await page.click('.bot-controls button:has-text("+10")');
+  await sleep(400);
+  // Puzzle size 3x2 via the width stepper.
+  await page.click('button[aria-label="Wider puzzle"]');
+  await sleep(200);
+  // Upload two puzzle pictures — screenshots of the page itself make handy
+  // recognisable photos.
+  const photo1 = await page.screenshot({ type: 'jpeg', quality: 80 });
+  await page.setInputFiles('input[type=file]', {
+    name: 'photo1.jpg',
+    mimeType: 'image/jpeg',
+    buffer: photo1,
+  });
+  await sleep(500);
+  const photo2 = await page.screenshot({ type: 'jpeg', quality: 80, clip: { x: 300, y: 100, width: 800, height: 500 } });
+  await page.setInputFiles('input[type=file]', {
+    name: 'photo2.jpg',
+    mimeType: 'image/jpeg',
+    buffer: photo2,
+  });
   await sleep(600);
   await page.screenshot({ path: path.join(OUT_DIR, '1-lobby.png') });
   console.log('lobby captured');
@@ -127,8 +146,8 @@ async function main() {
 
   // Steer two teams to completion for confetti/locked visuals (BFS around
   // occupied cells, anchors clear of board corners); other pieces roam.
-  const QUAD_DX = [0, 1, 0, 1];
-  const QUAD_DY = [0, 0, 1, 1];
+  const pqx = (q: number, gw: number) => q % gw;
+  const pqy = (q: number, gw: number) => Math.floor(q / gw);
   const bfsStep = (
     snap: PuzzleSnapshot,
     occupied: Set<number>,
@@ -178,10 +197,10 @@ async function main() {
       const piece = byId.get(bot.slot);
       if (!piece || piece.locked) continue;
       if (piece.g <= 1) {
-        const ox = 1 + piece.g * 3;
+        const ox = 1 + piece.g * (snap.gw + 1);
         const oy = 1;
-        const tx = Math.min(ox + QUAD_DX[piece.q], snap.cols - 1);
-        const ty = oy + QUAD_DY[piece.q];
+        const tx = Math.min(ox + pqx(piece.q, snap.gw), snap.cols - 1);
+        const ty = Math.min(oy + pqy(piece.q, snap.gw), snap.rows - 1);
         if (tx === piece.cx && ty === piece.cy) {
           bot.socket.emit('input', { t: 'dir', x: 0, y: 0 });
           continue;
@@ -194,10 +213,117 @@ async function main() {
       }
     }
   }, 200);
-  await sleep(7000);
+  await sleep(12000);
   await page.screenshot({ path: path.join(OUT_DIR, '3-team-puzzles.png') });
   clearInterval(solver);
   console.log('puzzle captured');
+
+  // --- Medusa ---
+  await page.click('.host-corner button:has-text("Lobby")');
+  await sleep(400);
+  await page.click('button.start-medusa');
+  // Socket players sprint on green and dodge pits so the field spreads out.
+  const medusaDriver = setInterval(() => {
+    const s = latest as MedusaSnapshot | null;
+    if (!s || s.kind !== 'medusa' || s.phase !== 'play' || s.gaze.state !== 'green') return;
+    const pit = new Set(s.pits.map(([c, l]) => l * 1000 + c));
+    const isPit = (c: number, l: number) => pit.has(l * 1000 + c);
+    const pos = new Map(s.players.map((p) => [p[0], p] as const));
+    for (const bot of bots) {
+      const p = pos.get(bot.slot);
+      if (!p || p[3] !== 0 || Math.random() < 0.35) continue;
+      const [, col, lane] = p;
+      if (!isPit(col + 1, lane)) bot.socket.emit('input', { t: 'hop', d: 'f' });
+      else if (lane + 1 < s.lanes && !isPit(col, lane + 1)) {
+        bot.socket.emit('input', { t: 'hop', d: 'r' });
+      } else if (lane - 1 >= 0 && !isPit(col, lane - 1)) {
+        bot.socket.emit('input', { t: 'hop', d: 'l' });
+      }
+    }
+  }, 160);
+  await sleep(8000); // chunk load + countdown + some green running
+  await page.screenshot({ path: path.join(OUT_DIR, '4-medusa.png') });
+  // Catch a red moment.
+  const redAt = Date.now();
+  while (Date.now() - redAt < 20000) {
+    const s = latest as MedusaSnapshot | null;
+    if (s?.kind === 'medusa' && s.gaze.state === 'red') break;
+    await sleep(150);
+  }
+  await sleep(500); // head finishes snapping around, tint fades in
+  await page.screenshot({ path: path.join(OUT_DIR, '5-medusa-red.png') });
+  clearInterval(medusaDriver);
+  console.log('medusa captured');
+
+  // --- Medusa v2 (eye mode): fullscreen face cut + phone shield view ---
+  await page.click('.host-corner button:has-text("Lobby")');
+  await sleep(400);
+  await page.locator('label:has-text("eye mode") input[type=checkbox]').check();
+  await sleep(250);
+  // A phone page for the shield view: reuse a socket player's identity is
+  // not possible (tokens are per-join), so join fresh via stored creds.
+  const phone = await browser.newPage({ viewport: { width: 390, height: 780 } });
+  await phone.goto(`${BASE}/`);
+  await phone.evaluate(
+    ([c]) => localStorage.setItem('ca-creds', JSON.stringify({ code: c, name: 'Perseus' })),
+    [code],
+  );
+  await phone.goto(`${BASE}/play`);
+  await sleep(600);
+  await page.click('button.start-medusa');
+  // Decline the camera on the phone (headless has none) — the shield must
+  // still render from the server's shield stream.
+  await phone.locator('.eyecam-consent button.no').click({ timeout: 8000 }).catch(() => {});
+  const v2driver = setInterval(() => {
+    const s = latest as MedusaSnapshot | null;
+    if (!s || s.kind !== 'medusa' || s.phase !== 'play') return;
+    const pit = new Set(s.pits.map(([c, l]) => l * 1000 + c));
+    const pos = new Map(s.players.map((p) => [p[0], p] as const));
+    bots.forEach((bot, i) => {
+      const p = pos.get(bot.slot);
+      if (!p || p[3] !== 0) return;
+      if (i < 3) {
+        // a few players hover mid-meter — caught until the stone reaches
+        // their legs, then eyes shut — so tiers 1-2 stay visible on screen
+        bot.socket.emit('input', { t: 'gaze', s: p[5] < 55 ? 2 : 1, c: 0.9 });
+        return;
+      }
+      bot.socket.emit('input', { t: 'gaze', s: 1, c: 0.9 });
+      if (Math.random() < 0.35) return;
+      const [, col, lane] = p;
+      if (!pit.has(lane * 1000 + col + 1)) bot.socket.emit('input', { t: 'hop', d: 'f' });
+    });
+  }, 160);
+  await sleep(6000); // countdown + some green
+  const v2redAt = Date.now();
+  while (Date.now() - v2redAt < 25000) {
+    const s = latest as MedusaSnapshot | null;
+    if (s?.kind === 'medusa' && s.gaze.state === 'red' && s.gaze.tLeft > 2.4) break;
+    await sleep(120);
+  }
+  await sleep(1800); // past the fairness grace — tiers rise, strip populates
+  await page.screenshot({ path: path.join(OUT_DIR, '6-medusa-face.png') });
+  // The shield is a lazy 3D chunk and shows only during red — make sure it
+  // mounted and capture the phone while she's still watching.
+  await phone
+    .locator('.shield-box canvas')
+    .first()
+    .waitFor({ timeout: 5000 })
+    .catch(() => {});
+  await phone.screenshot({ path: path.join(OUT_DIR, '7-phone-shield.png') });
+  // Back on green the field returns — tiers decay slowly, so the stone
+  // creeping up the caught starers is visible.
+  const greenAt = Date.now();
+  while (Date.now() - greenAt < 15000) {
+    const s = latest as MedusaSnapshot | null;
+    if (s?.kind === 'medusa' && s.gaze.state === 'green') break;
+    await sleep(120);
+  }
+  await sleep(600);
+  await page.screenshot({ path: path.join(OUT_DIR, '8-medusa-tiers.png') });
+  clearInterval(v2driver);
+  console.log('medusa v2 captured');
+  await phone.close();
 
   await browser.close();
   for (const s of sockets) s.disconnect();

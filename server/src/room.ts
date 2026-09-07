@@ -1,7 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { Server, Socket } from 'socket.io';
 import {
   MAX_PLAYERS,
+  MAX_PUZZLE_DIM,
+  MAX_ROOM_IMAGES,
+  MIN_PUZZLE_DIM,
   colorForSlot,
   type BuzzType,
   type GameId,
@@ -15,6 +18,7 @@ import {
 } from '../../shared/protocol';
 import type { GameCtx, GameModule } from './games/types';
 import { LastOneStanding } from './games/lastOneStanding';
+import { Medusa } from './games/medusa';
 import { TeamPuzzles } from './games/teamPuzzles';
 
 interface Player {
@@ -47,7 +51,13 @@ export class Room {
   private phase: RoomPhase = 'lobby';
   private gameId: GameId | null = null;
   private game: GameModule | null = null;
-  private options: RoomOptions = { rotation: false };
+  private options: RoomOptions = {
+    rotation: false,
+    puzzleW: 2,
+    puzzleH: 2,
+    medusaEyes: false,
+  };
+  private readonly images = new Map<string, Buffer>(); // insertion order = upload order
   private nextSlot = 1;
   private botTicker: ReturnType<typeof setInterval> | null = null;
   private botsCreated = 0;
@@ -84,7 +94,57 @@ export class Room {
           bot: p.isBot || undefined,
         })),
       options: this.options,
+      images: [...this.images.keys()].map((id) => ({ id })),
     };
+  }
+
+  getImage(id: string): Buffer | undefined {
+    return this.images.get(id);
+  }
+
+  // Stage uploads a puzzle picture (base64 jpeg/png, already downscaled
+  // client-side). Lobby-only, like the other host controls.
+  addArt(socket: Socket, data: unknown, cb?: (res: unknown) => void) {
+    const reply = (res: { ok: boolean; id?: string; err?: string }) => {
+      if (typeof cb === 'function') cb(res);
+    };
+    if (!socket.data.stage || this.phase !== 'lobby') {
+      reply({ ok: false, err: 'Only the stage can add pictures, in the lobby' });
+      return;
+    }
+    if (typeof data !== 'string' || data.length === 0) {
+      reply({ ok: false, err: 'Bad image data' });
+      return;
+    }
+    if (this.images.size >= MAX_ROOM_IMAGES) {
+      reply({ ok: false, err: `Limit of ${MAX_ROOM_IMAGES} pictures per room` });
+      return;
+    }
+    let buf: Buffer;
+    try {
+      buf = Buffer.from(data.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+    } catch {
+      reply({ ok: false, err: 'Bad image data' });
+      return;
+    }
+    if (buf.length === 0 || buf.length > 1_500_000) {
+      reply({ ok: false, err: 'Image too large (1.5MB max after downscaling)' });
+      return;
+    }
+    this.touch();
+    const id = randomBytes(8).toString('hex');
+    this.images.set(id, buf);
+    this.broadcastRoom();
+    reply({ ok: true, id });
+  }
+
+  removeArt(socket: Socket, id: unknown) {
+    if (!socket.data.stage || this.phase !== 'lobby') return;
+    if (typeof id !== 'string') return;
+    if (this.images.delete(id)) {
+      this.touch();
+      this.broadcastRoom();
+    }
   }
 
   private broadcastRoom() {
@@ -107,7 +167,7 @@ export class Room {
     const isNew = !player;
     if (!player) {
       if (this.players.size >= MAX_PLAYERS) {
-        return { ok: false, err: 'Room is full (70 players max)' };
+        return { ok: false, err: `Room is full (${MAX_PLAYERS} players max)` };
       }
       const slot = this.nextSlot++;
       player = {
@@ -181,6 +241,7 @@ export class Room {
           .map((p) => ({ slot: p.slot, name: p.name, color: p.color })),
       options: this.options,
       isBot: (slot: number) => !!this.bySlot.get(slot)?.isBot,
+      imageIds: () => [...this.images.keys()],
       emitStage: (snapshot: StageSnapshot) => {
         this.io.to(this.stageChannel).emit('snapshot', snapshot);
       },
@@ -189,23 +250,53 @@ export class Room {
         const player = this.bySlot.get(slot);
         if (player?.socketId) this.io.to(player.socketId).emit('buzz', type);
       },
+      send: (slot: number, event: string, data: unknown) => {
+        const player = this.bySlot.get(slot);
+        if (player?.socketId) this.io.to(player.socketId).emit(event, data);
+      },
     };
+  }
+
+  private applyOptions(options: unknown) {
+    if (!options || typeof options !== 'object') return;
+    const o = options as Partial<RoomOptions>;
+    if (typeof o.rotation === 'boolean') this.options.rotation = o.rotation;
+    if (typeof o.medusaEyes === 'boolean') this.options.medusaEyes = o.medusaEyes;
+    const clampDim = (v: unknown, fallback: number) =>
+      typeof v === 'number' && Number.isFinite(v)
+        ? Math.min(MAX_PUZZLE_DIM, Math.max(MIN_PUZZLE_DIM, Math.trunc(v)))
+        : fallback;
+    this.options.puzzleW = clampDim(o.puzzleW, this.options.puzzleW);
+    this.options.puzzleH = clampDim(o.puzzleH, this.options.puzzleH);
+    // A 1x1 "puzzle" is no puzzle at all.
+    if (this.options.puzzleW * this.options.puzzleH < 2) this.options.puzzleH = 2;
+  }
+
+  // Host adjusts settings (steppers/checkbox) ahead of the next round; kept
+  // server-side so a mid-adjustment room broadcast can't reset them.
+  setOptions(socket: Socket, options: unknown) {
+    if (!socket.data.stage) return;
+    this.touch();
+    this.applyOptions(options);
+    this.broadcastRoom();
   }
 
   startGame(socket: Socket, gameId: unknown, options: unknown) {
     if (!socket.data.stage) return;
-    if (gameId !== 'los' && gameId !== 'puzzle') return;
+    if (gameId !== 'los' && gameId !== 'puzzle' && gameId !== 'medusa') return;
     if (this.bySlot.size === 0) return;
     this.touch();
     this.stopGame();
-    if (options && typeof options === 'object') {
-      const o = options as Partial<RoomOptions>;
-      if (typeof o.rotation === 'boolean') this.options.rotation = o.rotation;
-    }
+    this.applyOptions(options);
     this.gameId = gameId;
     this.phase = 'playing';
     const ctx = this.makeCtx();
-    this.game = gameId === 'los' ? new LastOneStanding(ctx) : new TeamPuzzles(ctx);
+    this.game =
+      gameId === 'los'
+        ? new LastOneStanding(ctx)
+        : gameId === 'puzzle'
+          ? new TeamPuzzles(ctx)
+          : new Medusa(ctx);
     this.broadcastRoom();
     this.game.start();
     this.startBotTicker();
@@ -219,8 +310,11 @@ export class Room {
       if (!game) return;
       for (const p of this.bySlot.values()) {
         if (!p.isBot) continue;
-        const payload = game.botInput(p.slot);
-        if (payload) game.input(p.slot, payload);
+        const result = game.botInput(p.slot);
+        if (!result) continue;
+        for (const payload of Array.isArray(result) ? result : [result]) {
+          game.input(p.slot, payload);
+        }
       }
     }, 180);
   }

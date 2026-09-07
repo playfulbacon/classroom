@@ -311,12 +311,70 @@ input {
   left: 0;
   right: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 14px;
   padding: 14px;
   background: rgba(10, 12, 24, 0.85);
   z-index: 10;
+}
+
+.art-bar {
+  position: absolute;
+  bottom: 64px;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 14px;
+  z-index: 10;
+}
+
+.art-bar .add-art {
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px dashed #4a5480;
+  background: rgba(42, 49, 85, 0.6);
+  color: #d5daf5;
+  font-size: 15px;
+}
+
+.art-thumb {
+  position: relative;
+  width: 52px;
+  height: 52px;
+}
+
+.art-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 2px solid #2a3155;
+}
+
+.art-thumb button {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: #e5484d;
+  color: white;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+}
+
+.art-hint {
+  color: #9aa3c7;
+  font-size: 14px;
 }
 
 .host-bar button {
@@ -334,6 +392,152 @@ input {
 
 .host-bar .start-puzzle {
   background: #30a46c;
+}
+
+.host-bar .start-medusa {
+  background: #7c5cff;
+}
+
+.medusa-box {
+  position: absolute;
+  inset: 0;
+}
+
+.eyecam-consent {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(320px, 86vw);
+  background: rgba(14, 17, 33, 0.96);
+  border: 1px solid #2a3155;
+  border-radius: 16px;
+  padding: 20px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+}
+
+.eyecam-consent p {
+  color: #b9c0e0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.eyecam-consent button {
+  padding: 13px;
+  border-radius: 10px;
+  border: none;
+  font-size: 16px;
+  font-weight: 700;
+  color: white;
+}
+
+.eyecam-consent .yes {
+  background: #7c5cff;
+}
+
+.eyecam-consent .no {
+  background: #2a3155;
+}
+
+.eyecam {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  right: 10px;
+  width: 76px;
+  height: 76px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  z-index: 55;
+  pointer-events: none;
+  background: #000;
+}
+
+.eyecam-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.eyecam-state {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font-size: 20px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8));
+}
+
+.shield-box {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40; /* above the controller HUD, below the eyecam preview */
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.shield-webgl {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* the reflection is horizontally mirrored — the image, never the controls */
+  transform: scaleX(-1);
+}
+
+.shield-rim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.eyecam-cal {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 24px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #ffe066;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+.eyecam-chip {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  right: 10px;
+  background: rgba(14, 17, 33, 0.85);
+  border: 1px solid #2a3155;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: #b9c0e0;
+  z-index: 55;
+  pointer-events: none;
+}
+
+.progress-track {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(14px + env(safe-area-inset-bottom));
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.2s ease;
 }
 
 .host-bar .neutral {

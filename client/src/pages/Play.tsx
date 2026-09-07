@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { BuzzType, JoinResponse, MeState, RoomState } from '../../../shared/protocol';
-import { drawQuadrant } from '../art';
+import type {
+  BuzzType,
+  JoinResponse,
+  MedusaFieldMsg,
+  MedusaShieldMsg,
+  MeState,
+  RoomState,
+} from '../../../shared/protocol';
+import { drawFragment, getRoomImage, groupArtCanvas } from '../art';
+import type { GazeState, GazeTracker } from '../gaze';
+import type { ShieldRenderer3D } from '../render/shield3d';
 import { loadCreds, saveCreds, socket } from '../socket';
 
 const JOY_RADIUS = 90; // px of drag for full deflection
@@ -12,11 +21,19 @@ interface TouchHandlers {
   onRelease?: () => void;
   onFlick?: (x: number, y: number) => void;
   onTap?: () => void;
+  onHold?: () => void; // long-press without moving (~450ms)
   onTouchState?: (down: boolean) => void;
 }
 
 /** Full-screen control surface: drag = joystick, quick swipe = flick, tap = tap. */
-function TouchSurface({ onVector, onRelease, onFlick, onTap, onTouchState }: TouchHandlers) {
+function TouchSurface({
+  onVector,
+  onRelease,
+  onFlick,
+  onTap,
+  onHold,
+  onTouchState,
+}: TouchHandlers) {
   const originEl = useRef<HTMLDivElement>(null);
   const dotEl = useRef<HTMLDivElement>(null);
   const state = useRef({
@@ -28,6 +45,8 @@ function TouchSurface({ onVector, onRelease, onFlick, onTap, onTouchState }: Tou
     t0: 0,
     maxDist: 0,
     lastEmit: 0,
+    holdTimer: 0 as ReturnType<typeof setTimeout> | 0,
+    holdFired: false,
   });
 
   const showAt = (el: HTMLDivElement | null, x: number, y: number) => {
@@ -66,6 +85,15 @@ function TouchSurface({ onVector, onRelease, onFlick, onTap, onTouchState }: Tou
     s.t0 = performance.now();
     s.maxDist = 0;
     s.lastEmit = 0;
+    s.holdFired = false;
+    if (onHold) {
+      s.holdTimer = setTimeout(() => {
+        if (s.pointerId !== -1 && s.maxDist < 12) {
+          s.holdFired = true;
+          onHold();
+        }
+      }, 450);
+    }
     showAt(originEl.current, s.ox, s.oy);
     showAt(dotEl.current, s.ox, s.oy);
     onTouchState?.(true);
@@ -92,15 +120,19 @@ function TouchSurface({ onVector, onRelease, onFlick, onTap, onTouchState }: Tou
     const s = state.current;
     if (e.pointerId !== s.pointerId) return;
     s.pointerId = -1;
+    if (s.holdTimer) clearTimeout(s.holdTimer);
+    s.holdTimer = 0;
     hide();
     const dt = performance.now() - s.t0;
     const dx = s.lastX - s.ox;
     const dy = s.lastY - s.oy;
     const dist = Math.hypot(dx, dy);
-    if (dt < 250 && dist > 55) {
-      onFlick?.(dx / dist, dy / dist);
-    } else if (dt < 300 && s.maxDist < 12) {
-      onTap?.();
+    if (!s.holdFired) {
+      if (dt < 250 && dist > 55) {
+        onFlick?.(dx / dist, dy / dist);
+      } else if (dt < 300 && s.maxDist < 12) {
+        onTap?.();
+      }
     }
     onRelease?.();
     onTouchState?.(false);
@@ -120,17 +152,184 @@ function TouchSurface({ onVector, onRelease, onFlick, onTap, onTouchState }: Tou
   );
 }
 
-function PiecePreview({ group, quadrant }: { group: number; quadrant: number }) {
+interface PiecePreviewProps {
+  group: number;
+  quadrant: number;
+  gw: number;
+  gh: number;
+  imageId?: string | null;
+}
+
+function PiecePreview({ group, quadrant, gw, gh, imageId }: PiecePreviewProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    drawQuadrant(ctx, group, quadrant, 0, 0, canvas.width);
-  }, [group, quadrant]);
+    let cancelled = false;
+    const render = () => {
+      if (cancelled) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      let source: CanvasImageSource;
+      let srcW: number;
+      let srcH: number;
+      if (imageId) {
+        const code = loadCreds()?.code ?? '';
+        const img = getRoomImage(code, imageId, render); // re-render on load
+        if (!img) {
+          ctx.fillStyle = '#39406b';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          return;
+        }
+        source = img;
+        srcW = img.naturalWidth;
+        srcH = img.naturalHeight;
+      } else {
+        const art = groupArtCanvas(group, gw, gh);
+        source = art;
+        srcW = art.width;
+        srcH = art.height;
+      }
+      drawFragment(ctx, source, srcW, srcH, gw, gh, quadrant, 0, 0, canvas.width);
+    };
+    render();
+    return () => {
+      cancelled = true;
+    };
+  }, [group, quadrant, gw, gh, imageId]);
   return <canvas ref={ref} width={170} height={170} className="piece-preview" />;
+}
+
+type GazeCamStatus = 'ask' | 'starting' | 'calibrating' | 'on' | 'off' | 'failed';
+
+const GAZE_ICONS = ['🛡', '😑', '👁', '❔'] as const; // shield/closed/caught/unknown
+
+// Medusa eye mode: consent card → on-device gaze tracking → quick "look at
+// your phone" calibration → tiny mirrored self-preview with a live state
+// icon. Detection runs entirely on the phone; only a {state, confidence}
+// pair is sent. Unmounting stops the camera.
+function MedusaGazeCam() {
+  const [status, setStatus] = useState<GazeCamStatus>(() => {
+    try {
+      const remembered = sessionStorage.getItem('ca-eyecam');
+      if (remembered === 'yes') return 'starting';
+      if (remembered === 'no') return 'off';
+    } catch {
+      // fine
+    }
+    return 'ask';
+  });
+  const [gaze, setGaze] = useState<GazeState>({ s: 3, c: 1 });
+  const previewRef = useRef<HTMLDivElement>(null);
+  const trackerRef = useRef<GazeTracker | null>(null);
+  const lastRef = useRef<GazeState | null>(null);
+
+  const remember = (v: 'yes' | 'no') => {
+    try {
+      sessionStorage.setItem('ca-eyecam', v);
+    } catch {
+      // fine
+    }
+  };
+
+  useEffect(() => {
+    if (status !== 'starting') return;
+    let cancelled = false;
+    void (async () => {
+      const mod = await import('../gaze');
+      const result = await mod.startGazeTracking((s) => {
+        lastRef.current = s;
+        setGaze(s);
+        socket.emit('input', { t: 'gaze', s: s.s, c: Math.round(s.c * 100) / 100 });
+      });
+      if (cancelled) {
+        if (typeof result === 'object') result.stop();
+        return;
+      }
+      if (result === 'denied' || result === 'unsupported') {
+        setStatus('failed');
+        return;
+      }
+      trackerRef.current = result;
+      result.video.className = 'eyecam-video';
+      previewRef.current?.appendChild(result.video);
+      setStatus('calibrating');
+      await result.calibrate(1500);
+      if (!cancelled) setStatus('on');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [status]);
+
+  // Heartbeat so the server can tell fresh reports from a dead camera.
+  useEffect(() => {
+    if (status !== 'on' && status !== 'calibrating') return;
+    const iv = setInterval(() => {
+      const s = lastRef.current;
+      if (s) socket.emit('input', { t: 'gaze', s: s.s, c: Math.round(s.c * 100) / 100 });
+    }, 250);
+    return () => clearInterval(iv);
+  }, [status]);
+
+  useEffect(
+    () => () => {
+      trackerRef.current?.stop();
+      trackerRef.current = null;
+    },
+    [],
+  );
+
+  if (status === 'ask') {
+    return (
+      <div className="eyecam-consent">
+        <h3>👁 Medusa&apos;s rules</h3>
+        <p>
+          When she turns: <b>look at your phone or close your eyes.</b> Your
+          camera checks where you&apos;re looking — video never leaves your
+          phone, only &quot;safe or caught&quot; does.
+        </p>
+        <p style={{ opacity: 0.75 }}>
+          No camera? Her gaze still finds you, slowly — hide behind statues.
+        </p>
+        <button
+          className="yes"
+          onClick={() => {
+            remember('yes');
+            setStatus('starting');
+          }}
+        >
+          Use my camera
+        </button>
+        <button
+          className="no"
+          onClick={() => {
+            remember('no');
+            setStatus('off');
+          }}
+        >
+          No camera
+        </button>
+      </div>
+    );
+  }
+  if (status === 'off' || status === 'failed') {
+    return (
+      <div className="eyecam-chip">
+        📷 {status === 'failed' ? 'camera unavailable — ' : ''}she finds you slowly:
+        hide behind statues
+      </div>
+    );
+  }
+  return (
+    <div className="eyecam" ref={previewRef}>
+      <span className="eyecam-state">
+        {status === 'calibrating' ? '🎯' : GAZE_ICONS[gaze.s]}
+      </span>
+      {status === 'calibrating' && <span className="eyecam-cal">look at your phone…</span>}
+    </div>
+  );
 }
 
 const BUZZ_PATTERNS: Record<BuzzType, number[]> = {
@@ -138,12 +337,58 @@ const BUZZ_PATTERNS: Record<BuzzType, number[]> = {
   bumped: [35],
   eliminated: [90, 60, 250],
   locked: [60, 50, 60, 50, 220],
+  creep: [70, 40, 70], // the stone crept up a tier
 };
+
+// While Medusa watches, the phone becomes the mirrored bronze shield: the
+// big screen shows only her face, so this little reflection is the player's
+// whole world. It renders the field with the SAME three.js art and camera
+// as the stage (lazy chunk — loaded only here), horizontally mirrored, and
+// is visible only while her gaze is red; the TouchSurface stays mounted
+// underneath, so inputs are identical (world-mapped) in both views.
+function ShieldOverlay({
+  fieldRef,
+  shieldRef,
+  colorsRef,
+  selfSlot,
+}: {
+  fieldRef: React.MutableRefObject<MedusaFieldMsg | null>;
+  shieldRef: React.MutableRefObject<{ msg: MedusaShieldMsg; at: number } | null>;
+  colorsRef: React.MutableRefObject<Map<number, string>>;
+  selfSlot: number;
+}) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let disposed = false;
+    let renderer: ShieldRenderer3D | null = null;
+    void (async () => {
+      const mod = await import('../render/shield3d');
+      if (disposed || !boxRef.current) return;
+      renderer = mod.createShieldRenderer({
+        field: () => fieldRef.current,
+        shield: () => shieldRef.current,
+        colors: () => colorsRef.current,
+        selfSlot: () => selfSlot,
+      });
+      renderer.mount(boxRef.current);
+    })();
+    return () => {
+      disposed = true;
+      renderer?.dispose();
+    };
+  }, [fieldRef, shieldRef, colorsRef, selfSlot]);
+  return <div ref={boxRef} className="shield-box" />;
+}
 
 export function Play() {
   const navigate = useNavigate();
   const [me, setMe] = useState<MeState | null>(null);
   const [room, setRoom] = useState<RoomState | null>(null);
+  // Medusa shield-view plumbing (refs — the canvas loop reads them directly).
+  const fieldRef = useRef<MedusaFieldMsg | null>(null);
+  const shieldRef = useRef<{ msg: MedusaShieldMsg; at: number } | null>(null);
+  const colorsRef = useRef(new Map<number, string>());
+  const lastMeterRef = useRef(0);
   const [connected, setConnected] = useState(socket.connected);
   const [joinError, setJoinError] = useState('');
 
@@ -179,11 +424,32 @@ export function Play() {
         // vibration is a nice-to-have
       }
     };
+    const onField = (msg: MedusaFieldMsg) => {
+      fieldRef.current = msg;
+      shieldRef.current = null;
+      lastMeterRef.current = 0;
+    };
+    const onShield = (msg: MedusaShieldMsg) => {
+      shieldRef.current = { msg, at: performance.now() };
+      // Escalating warning as the meter climbs: vibration at each threshold.
+      const q = msg.me[2];
+      const prev = lastMeterRef.current;
+      lastMeterRef.current = q;
+      try {
+        if (prev < 90 && q >= 90) navigator.vibrate?.([120, 60, 120]);
+        else if (prev < 70 && q >= 70) navigator.vibrate?.([90]);
+        else if (prev < 40 && q >= 40) navigator.vibrate?.([50]);
+      } catch {
+        // vibration is a nice-to-have
+      }
+    };
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.on('me', setMe);
     socket.on('room', setRoom);
     socket.on('buzz', onBuzz);
+    socket.on('field', onField);
+    socket.on('shield', onShield);
     if (socket.connected) doJoin();
     return () => {
       socket.off('connect', onConnect);
@@ -191,8 +457,17 @@ export function Play() {
       socket.off('me', setMe);
       socket.off('room', setRoom);
       socket.off('buzz', onBuzz);
+      socket.off('field', onField);
+      socket.off('shield', onShield);
     };
   }, [navigate]);
+
+  // Slot → color for the shield view's neighbor dots.
+  useEffect(() => {
+    const map = new Map<number, string>();
+    if (room) for (const p of room.players) map.set(p.id, p.color);
+    colorsRef.current = map;
+  }, [room]);
 
   // Keep the phone screen awake during play.
   useEffect(() => {
@@ -336,7 +611,13 @@ export function Play() {
         <div className="status-screen" style={{ background: '#245c36' }}>
           {reconnectBanner}
           {me.group !== undefined && me.quadrant !== undefined && (
-            <PiecePreview group={me.group} quadrant={me.quadrant} />
+            <PiecePreview
+              group={me.group}
+              quadrant={me.quadrant}
+              gw={me.gw ?? 2}
+              gh={me.gh ?? 2}
+              imageId={me.imageId}
+            />
           )}
           <h2>🧩 Team complete!</h2>
           <div className="sub">Your team finished #{me.teamRank}.</div>
@@ -353,13 +634,91 @@ export function Play() {
           onTouchState={(down) => sendInput({ t: 'touch', down })}
         />
         <div className="controller-hud">
-          <div className="hint">This is YOUR piece — find its three partners on the big screen</div>
+          <div className="hint">
+            This is YOUR piece — find its {(me.gw ?? 2) * (me.gh ?? 2) - 1} partners on the big
+            screen
+          </div>
           {me.group !== undefined && me.quadrant !== undefined && (
-            <PiecePreview group={me.group} quadrant={me.quadrant} />
+            <PiecePreview
+              group={me.group}
+              quadrant={me.quadrant}
+              gw={me.gw ?? 2}
+              gh={me.gh ?? 2}
+              imageId={me.imageId}
+            />
           )}
           <div className="hint">
             Swipe &amp; hold to slide{me.rotationEnabled ? ' · tap to rotate' : ''}
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------- Medusa
+  if (me.game === 'medusa') {
+    const st = me.medusaState ?? 'running';
+    if (st === 'stone') {
+      return (
+        <div className="status-screen" style={{ background: '#3a3a44' }}>
+          {reconnectBanner}
+          <div className="big-num">{num}</div>
+          <h2>🗿 Petrified!</h2>
+          <div className="sub">
+            {me.eyeMode
+              ? 'Her gaze found you. You’re part of the garden now.'
+              : 'Medusa saw you move. You’re part of the garden now.'}
+          </div>
+        </div>
+      );
+    }
+    if (st === 'finished') {
+      return (
+        <div className="status-screen" style={{ background: '#245c36' }}>
+          {reconnectBanner}
+          <div className="big-num">{num}</div>
+          <h2>🏁 You escaped!</h2>
+          <div className="sub">{me.placement ? `Finished #${me.placement}.` : ''} Watch the rest!</div>
+        </div>
+      );
+    }
+    const progress = Math.min(
+      1,
+      (me.col ?? 0) / Math.max(1, (me.fieldLength ?? 24) - 1),
+    );
+    return (
+      <div className="controller" style={{ background: `color-mix(in srgb, ${tint} 30%, #0f1220)` }}>
+        {reconnectBanner}
+        <TouchSurface
+          onTap={() => sendInput({ t: 'hop', d: 'f' })}
+          onFlick={(x, y) => {
+            const d = Math.abs(y) >= Math.abs(x) ? (y < 0 ? 'f' : 'b') : x < 0 ? 'l' : 'r';
+            sendInput({ t: 'hop', d });
+          }}
+          onHold={() => sendInput({ t: 'ping' })}
+        />
+        {me.eyeMode && (
+          <ShieldOverlay
+            fieldRef={fieldRef}
+            shieldRef={shieldRef}
+            colorsRef={colorsRef}
+            selfSlot={me.playerId}
+          />
+        )}
+        {me.eyeMode && <MedusaGazeCam />}
+        <div className="controller-hud">
+          <div className="big-num" style={{ opacity: 0.25 }}>{num}</div>
+          <div className="hint">
+            {me.eyeMode
+              ? 'TAP to run · when she turns: LOOK AT YOUR PHONE (slow) or CLOSE YOUR EYES (fast, blind)!'
+              : 'TAP to run · swipe to dodge pits · watch the big screen — FREEZE when she turns!'}
+          </div>
+          <div className="hint" style={{ opacity: 0.7 }}>
+            Press &amp; hold to make your runner wave 👋
+          </div>
+        </div>
+        <div className="progress-track">
+          <div className="progress-fill" style={{ width: `${progress * 100}%`, background: tint }} />
         </div>
       </div>
     );

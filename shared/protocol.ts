@@ -1,7 +1,7 @@
 // Shared message + state types for Classroom Arcade.
 // Imported by both the server and the client.
 
-export type GameId = 'los' | 'puzzle';
+export type GameId = 'los' | 'puzzle' | 'medusa';
 
 export type RoomPhase = 'lobby' | 'playing';
 
@@ -15,6 +15,15 @@ export interface PlayerInfo {
 
 export interface RoomOptions {
   rotation: boolean; // Team Puzzles: require correct piece orientation
+  puzzleW: number; // Team Puzzles: puzzle width in cells (team size = W*H)
+  puzzleH: number; // Team Puzzles: puzzle height in cells
+  // Medusa: front-camera eye mode — looking at her during red petrifies you,
+  // but eyes-closed players may keep moving (on-device detection only).
+  medusaEyes: boolean;
+}
+
+export interface RoomImageInfo {
+  id: string; // fetch at GET /art/{roomCode}/{id}
 }
 
 export interface RoomState {
@@ -23,6 +32,7 @@ export interface RoomState {
   game: GameId | null;
   players: PlayerInfo[];
   options: RoomOptions;
+  images: RoomImageInfo[]; // teacher-uploaded puzzle pictures, upload order
 }
 
 // ---------------------------------------------------------------------------
@@ -70,11 +80,12 @@ export interface LosSnapshot {
 // Team Puzzles
 // ---------------------------------------------------------------------------
 
-// Quadrants: 0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right
+// Piece position within its puzzle: q in [0, gw*gh), reading order —
+// qx = q % gw, qy = floor(q / gw).
 export interface PuzzlePieceSnap {
   id: number; // piece id (== owner slot for real pieces; negative for phantoms)
-  g: number; // group id, 0-based — also the seed for the group's artwork
-  q: number; // quadrant 0..3
+  g: number; // group id, 0-based — also the seed for procedural artwork
+  q: number; // cell index within the puzzle (reading order)
   cx: number; // grid cell x
   cy: number; // grid cell y
   rot: number; // 0..3 quarter turns
@@ -90,13 +101,111 @@ export interface PuzzleSnapshot {
   countdown: number;
   cols: number;
   rows: number;
+  gw: number; // puzzle width in cells
+  gh: number; // puzzle height in cells
   pieces: PuzzlePieceSnap[];
   groupCount: number;
+  // group id → uploaded image id (null = procedural artwork from the group id)
+  groupImages: (string | null)[];
   // group ids in finishing order
   finished: number[];
 }
 
-export type StageSnapshot = LosSnapshot | PuzzleSnapshot;
+// ---------------------------------------------------------------------------
+// Medusa (red light, green light)
+// ---------------------------------------------------------------------------
+
+export type MedusaGazeState = 'green' | 'turning' | 'red' | 'returning';
+
+// Player states in the snapshot tuple. Petrification is the only elimination:
+// pits, chasms and collapsed ground BLOCK movement, they never swallow anyone.
+export const MEDUSA_RUNNING = 0;
+export const MEDUSA_STONE = 1;
+export const MEDUSA_FINISHED = 2;
+
+// Gaze-state codes (phone → server report, and the gz element in the player
+// tuple). During red, SHIELD and CLOSED are the two safe states; CAUGHT
+// (eyes open, gaze off the phone, high confidence) fills the death meter
+// fast, UNKNOWN (no face / camera covered / stale) fills it slowly — hiding
+// from the camera is never safety, just a slower death.
+export const GZ_SHIELD = 0; // eyes open, gaze on the phone
+export const GZ_CLOSED = 1; // eyes closed (may move at full speed, blind)
+export const GZ_CAUGHT = 2; // eyes open and off the phone — her gaze meets yours
+export const GZ_UNKNOWN = 3; // tracking lost / covered / never reported
+export const GZ_CLASSIC = -1; // room runs classic rules (eye mode off)
+
+// [slot, col, lane, state, gz, meterQ, tier] — col 0 = start edge (left),
+// col length-1 = the finish at Medusa's feet (right); lane = depth position;
+// gz = GZ_* (always CLASSIC when eye mode is off); meterQ = death meter
+// 0..100; tier = stone tier 0..2 (petrified IS tier 3, carried by state).
+export type MedusaPlayerTuple = [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+];
+
+// A ferry platform shuttling across a chasm band: [id, lane, c0, c1, pos].
+// It occupies cell (round(pos), lane) and bounces between columns c0 and c1;
+// runners hop on when it's aligned with an edge cell and ride it across.
+export type MedusaPlatformTuple = [number, number, number, number, number];
+
+// Crumbling ground: [col, lane, stage] — 0 intact (hairline cracks), 1 cracked
+// (someone stepped on it), 2 gone (collapsed into a blocking pit).
+export type MedusaCrumbleTuple = [number, number, 0 | 1 | 2];
+
+export interface MedusaSnapshot {
+  kind: 'medusa';
+  phase: GamePhase;
+  countdown: number;
+  t: number; // seconds since play began
+  timeLimit: number;
+  length: number; // columns along the race axis
+  lanes: number;
+  pits: [number, number][]; // [col, lane] — includes chasm band cells
+  platforms: MedusaPlatformTuple[];
+  crumble: MedusaCrumbleTuple[];
+  eyesMode: boolean; // v2 camera rules are live this round
+  gaze: {
+    state: MedusaGazeState;
+    tLeft: number; // seconds remaining in this gaze state
+    dir: number; // sweep angle (radians off the field axis, 0 = center)
+    target: number; // slot her eyes swivel toward (highest meter), 0 = none
+  };
+  players: MedusaPlayerTuple[];
+  // slots that pinged "find me" since the previous snapshot (beacon cue)
+  pings: number[];
+  finished: number[]; // slots in finishing order
+  aliveCount: number;
+}
+
+// Static field layout pushed once to each phone at round start / rejoin
+// ('field' event) so the phone can render its shield view without ever
+// receiving stage snapshots.
+export interface MedusaFieldMsg {
+  length: number;
+  lanes: number;
+  pits: [number, number][]; // includes chasm band cells
+  crumble: [number, number][]; // crumble cell locations (all start intact)
+  platforms: { id: number; lane: number; c0: number; c1: number }[];
+}
+
+// Phone shield view stream ('shield' event): sent ~5Hz to each running
+// player while Medusa is turning/red/returning in a v2 round. The big
+// screen shows only her face during red — everything the player can see of
+// the field comes through this little window.
+export interface MedusaShieldMsg {
+  g: [number, number, number]; // [gaze code 0g/1t/2r/3rt, sweep dir, tLeft]
+  me: [number, number, number, number, number]; // [col, lane, meterQ, tier, gz]
+  near: [number, number, number, number, number][]; // [slot,col,lane,state,tier] within r<=3
+  pf: [number, number][]; // ferries near the window: [id, pos]
+  cr: [number, number, number][]; // crumble near the window: [col, lane, stage]
+}
+
+export type StageSnapshot = LosSnapshot | PuzzleSnapshot | MedusaSnapshot;
 
 // ---------------------------------------------------------------------------
 // Personal state pushed to each phone ('me' event)
@@ -114,12 +223,21 @@ export interface MeState {
   placement?: number; // final rank, 1 = winner
   // Team Puzzles
   group?: number;
-  quadrant?: number;
+  quadrant?: number; // this piece's q index within the puzzle
+  gw?: number;
+  gh?: number;
+  imageId?: string | null; // uploaded picture for this team, null = procedural
   rotationEnabled?: boolean;
   teamRank?: number; // 1-based finish position once the team locks
+  // Medusa
+  medusaState?: 'running' | 'stone' | 'finished';
+  col?: number; // current progress column
+  fieldLength?: number;
+  eyeMode?: boolean; // room has eye mode on — the phone should arm its camera
+  tier?: number; // stone tier 0..2 (how far the stone has crept)
 }
 
-export type BuzzType = 'bumped' | 'eliminated' | 'locked' | 'go';
+export type BuzzType = 'bumped' | 'eliminated' | 'locked' | 'go' | 'creep';
 
 // ---------------------------------------------------------------------------
 // Socket event payloads
@@ -151,7 +269,12 @@ export type InputPayload =
   | { t: 'dash'; x: number; y: number } // LOS: flick dash, unit direction
   | { t: 'dir'; x: number; y: number } // Puzzle: held movement vector
   | { t: 'rot' } // Puzzle: tap to rotate
-  | { t: 'touch'; down: boolean }; // Puzzle: finger on/off (drives glow)
+  | { t: 'touch'; down: boolean } // Puzzle: finger on/off (drives glow)
+  | { t: 'hop'; d: 'f' | 'l' | 'r' | 'b' } // Medusa: hop forward/left/right/back
+  | { t: 'ping' } // Medusa: cosmetic "find me" beacon (always safe)
+  // Medusa eye mode: on-device gaze classification — a GZ_* state code plus
+  // a 0..1 confidence. Sent on change plus a ~250ms heartbeat.
+  | { t: 'gaze'; s: 0 | 1 | 2 | 3; c: number };
 
 export interface HostStartRequest {
   game: GameId;
@@ -163,6 +286,8 @@ export interface HostStartRequest {
 //  'snapshot' StageSnapshot    — stage screens only
 //  'me'       MeState          — one phone
 //  'buzz'     BuzzType         — one phone (vibration cue)
+//  'field'    MedusaFieldMsg   — one phone, once per Medusa round (static layout)
+//  'shield'   MedusaShieldMsg  — one phone, ~5Hz during turning/red/returning (v2)
 // Client → server:
 //  'stage:create' (cb: {code, room})
 //  'stage:attach' ({code}, cb: StageAttachResponse)
@@ -170,9 +295,14 @@ export interface HostStartRequest {
 //  'host:start'   (HostStartRequest)
 //  'host:lobby'   ()
 //  'host:bots'    ({delta: number}) — add/remove fake players (lobby only)
+//  'host:art:add'    ({data: base64 jpeg/png}, cb {ok, id?, err?}) — stage only
+//  'host:art:remove' ({id: string}) — stage only
 //  'input'        (InputPayload)
 
-export const MAX_PLAYERS = 70;
+export const MAX_PLAYERS = 100;
+export const MIN_PUZZLE_DIM = 1;
+export const MAX_PUZZLE_DIM = 5;
+export const MAX_ROOM_IMAGES = 20;
 
 export function colorForSlot(slot: number): string {
   const hue = (slot * 137.508) % 360;

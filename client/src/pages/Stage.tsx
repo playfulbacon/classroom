@@ -1,18 +1,31 @@
 import { useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import type { RoomState, StageSnapshot } from '../../../shared/protocol';
+import {
+  MAX_PUZZLE_DIM,
+  MIN_PUZZLE_DIM,
+  type GameId,
+  type RoomOptions,
+  type RoomState,
+  type StageSnapshot,
+} from '../../../shared/protocol';
 import { LosRenderer } from '../render/los';
+import type { MedusaRenderer3D } from '../render/medusa3d';
 import { PuzzleRenderer } from '../render/puzzle';
+import * as sfx from '../sfx';
 import { socket } from '../socket';
 
 export function Stage() {
   const [room, setRoom] = useState<RoomState | null>(null);
   const [qr, setQr] = useState('');
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const medusaBoxRef = useRef<HTMLDivElement>(null);
   const roomRef = useRef<RoomState | null>(null);
   const snapRef = useRef<StageSnapshot | null>(null);
   const losRef = useRef(new LosRenderer());
   const puzzleRef = useRef(new PuzzleRenderer());
+  const medusaRef = useRef<MedusaRenderer3D | null>(null);
+  const medusaLoadingRef = useRef(false);
+  const [medusaReady, setMedusaReady] = useState(false);
 
   useEffect(() => {
     const create = () => {
@@ -39,6 +52,21 @@ export function Stage() {
         create();
       }
     };
+    const ensureMedusa = async () => {
+      if (medusaRef.current || medusaLoadingRef.current) return;
+      medusaLoadingRef.current = true;
+      try {
+        const mod = await import('../render/medusa3d');
+        const renderer = mod.createMedusaRenderer(() => roomRef.current);
+        if (medusaBoxRef.current) renderer.mount(medusaBoxRef.current);
+        medusaRef.current = renderer;
+        const pending = snapRef.current;
+        if (pending?.kind === 'medusa') renderer.push(pending);
+        setMedusaReady(true);
+      } finally {
+        medusaLoadingRef.current = false;
+      }
+    };
     const onRoom = (r: RoomState) => {
       roomRef.current = r;
       setRoom(r);
@@ -46,12 +74,19 @@ export function Stage() {
         snapRef.current = null;
         losRef.current = new LosRenderer();
         puzzleRef.current = new PuzzleRenderer();
+        medusaRef.current?.dispose();
+        medusaRef.current = null;
+        setMedusaReady(false);
       }
     };
     const onSnapshot = (s: StageSnapshot) => {
       snapRef.current = s;
       if (s.kind === 'los') losRef.current.push(s);
-      else puzzleRef.current.push(s);
+      else if (s.kind === 'puzzle') puzzleRef.current.push(s);
+      else if (s.kind === 'medusa') {
+        if (medusaRef.current) medusaRef.current.push(s);
+        else void ensureMedusa();
+      }
     };
     socket.on('connect', attach);
     socket.on('room', onRoom);
@@ -94,26 +129,74 @@ export function Stage() {
       const r = roomRef.current;
       if (r?.phase === 'playing' && snap) {
         if (snap.kind === 'los') losRef.current.draw(ctx, cssW, cssH, r);
-        else puzzleRef.current.draw(ctx, cssW, cssH, r);
+        else if (snap.kind === 'puzzle') puzzleRef.current.draw(ctx, cssW, cssH, r);
+        else if (snap.kind === 'medusa') medusaRef.current?.frame();
       }
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const start = (game: 'los' | 'puzzle') => {
-    socket.emit('host:start', {
-      game,
-      options: { rotation: room?.options.rotation ?? false },
-    });
+  const start = (game: GameId) => {
+    sfx.unlock(); // user gesture — lets stage sound effects play
+    socket.emit('host:start', { game, options: room?.options });
   };
 
-  const setRotation = (rotation: boolean) => {
+  // Options live on the server (so a mid-adjustment room broadcast can't
+  // reset them); update the local copy optimistically for instant feedback.
+  const setOptions = (patch: Partial<RoomOptions>) => {
     if (!room) return;
-    // Options are applied at round start; keep the local copy in sync so the
-    // checkbox reflects what the next round will use.
-    setRoom({ ...room, options: { ...room.options, rotation } });
-    roomRef.current = { ...room, options: { ...room.options, rotation } };
+    const next = { ...room, options: { ...room.options, ...patch } };
+    setRoom(next);
+    roomRef.current = next;
+    socket.emit('host:options', next.options);
+  };
+
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [uploadMsg, setUploadMsg] = useState('');
+
+  // Downscale to max 1024px JPEG before sending — keeps uploads ~100KB and
+  // the original aspect, so puzzle size can change later without re-upload.
+  const fileToJpeg = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const maxSide = 1024;
+        const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+        const w = Math.max(1, Math.round(img.naturalWidth * scale));
+        const h = Math.max(1, Math.round(img.naturalHeight * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d')!.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error(`Could not read ${file.name}`));
+      };
+      img.src = url;
+    });
+
+  const onFilesPicked = async (files: FileList | null) => {
+    if (!files) return;
+    setUploadMsg('');
+    for (const file of [...files]) {
+      try {
+        const data = await fileToJpeg(file);
+        await new Promise<void>((resolve) => {
+          socket.emit('host:art:add', { data }, (res: { ok: boolean; err?: string }) => {
+            if (!res.ok) setUploadMsg(res.err ?? 'Upload failed');
+            resolve();
+          });
+        });
+      } catch {
+        setUploadMsg(`Could not read ${file.name}`);
+      }
+    }
+    if (fileInput.current) fileInput.current.value = '';
   };
 
   if (!room) {
@@ -129,10 +212,26 @@ export function Stage() {
 
   const joinUrl = `${location.host}`;
   const botCount = room.players.filter((p) => p.bot).length;
+  const { puzzleW, puzzleH } = room.options;
+  const teamK = puzzleW * puzzleH;
+  const teamCount = room.players.length > 0 ? Math.ceil(room.players.length / teamK) : 0;
+  const canShrink = (w: number, h: number) => w >= MIN_PUZZLE_DIM && w * h >= 2;
+
+  const inMedusa = room.phase === 'playing' && room.game === 'medusa';
 
   return (
     <div className="stage">
-      <canvas ref={canvasRef} />
+      <canvas ref={canvasRef} style={inMedusa ? { display: 'none' } : undefined} />
+      <div
+        ref={medusaBoxRef}
+        className="medusa-box"
+        style={inMedusa ? undefined : { display: 'none' }}
+      />
+      {inMedusa && !medusaReady && (
+        <div className="status-screen" style={{ background: 'transparent' }}>
+          <h2>🐍 Summoning Medusa…</h2>
+        </div>
+      )}
       {room.phase === 'lobby' && (
         <div className="stage-lobby">
           <h1>🕹️ Classroom Arcade</h1>
@@ -161,6 +260,38 @@ export function Stage() {
               </div>
             ))}
           </div>
+          <div className="art-bar">
+            <button className="add-art" onClick={() => fileInput.current?.click()}>
+              📷 Add pictures
+            </button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(e) => onFilesPicked(e.target.files)}
+            />
+            {room.images.map((img) => (
+              <div key={img.id} className="art-thumb">
+                <img src={`/art/${room.code}/${img.id}`} alt="puzzle art" />
+                <button
+                  onClick={() => socket.emit('host:art:remove', { id: img.id })}
+                  aria-label="Remove picture"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            <span className="art-hint">
+              {uploadMsg ||
+                (room.images.length === 0
+                  ? 'Teams without a photo get colorful patterns'
+                  : teamCount > 0
+                    ? `${Math.min(room.images.length, teamCount)} of ${teamCount} teams get photos`
+                    : `${room.images.length} picture${room.images.length === 1 ? '' : 's'} ready`)}
+            </span>
+          </div>
           <div className="host-bar">
             <span className="count">
               {room.players.length} player{room.players.length === 1 ? '' : 's'}
@@ -179,13 +310,63 @@ export function Stage() {
             >
               🧩 Team Puzzles
             </button>
+            <button
+              className="start-medusa"
+              disabled={room.players.length === 0}
+              onClick={() => start('medusa')}
+            >
+              🐍 Medusa
+            </button>
+            <div className="bot-controls">
+              <span title="Puzzle size in cells — team size is width × height">🧩</span>
+              <button
+                aria-label="Narrower puzzle"
+                onClick={() => setOptions({ puzzleW: puzzleW - 1 })}
+                disabled={!canShrink(puzzleW - 1, puzzleH)}
+              >
+                −
+              </button>
+              <span style={{ minWidth: 20 }}>{puzzleW}</span>
+              <button
+                aria-label="Wider puzzle"
+                onClick={() => setOptions({ puzzleW: puzzleW + 1 })}
+                disabled={puzzleW >= MAX_PUZZLE_DIM}
+              >
+                ＋
+              </button>
+              <span style={{ minWidth: 14 }}>×</span>
+              <button
+                aria-label="Shorter puzzle"
+                onClick={() => setOptions({ puzzleH: puzzleH - 1 })}
+                disabled={!canShrink(puzzleH - 1, puzzleW)}
+              >
+                −
+              </button>
+              <span style={{ minWidth: 20 }}>{puzzleH}</span>
+              <button
+                aria-label="Taller puzzle"
+                onClick={() => setOptions({ puzzleH: puzzleH + 1 })}
+                disabled={puzzleH >= MAX_PUZZLE_DIM}
+              >
+                ＋
+              </button>
+              <span style={{ minWidth: 80 }}>teams of {teamK}</span>
+            </div>
             <label>
               <input
                 type="checkbox"
                 checked={room.options.rotation}
-                onChange={(e) => setRotation(e.target.checked)}
+                onChange={(e) => setOptions({ rotation: e.target.checked })}
               />
               piece rotation
+            </label>
+            <label title="Phones use the front camera (on-device only) — looking at Medusa during red petrifies you; eyes-closed players may keep moving">
+              <input
+                type="checkbox"
+                checked={room.options.medusaEyes}
+                onChange={(e) => setOptions({ medusaEyes: e.target.checked })}
+              />
+              👁 eye mode
             </label>
             <div className="bot-controls">
               <button
@@ -209,9 +390,7 @@ export function Stage() {
       )}
       {room.phase === 'playing' && (
         <div className="host-corner">
-          {room.game && (
-            <button onClick={() => start(room.game as 'los' | 'puzzle')}>🔁 Replay</button>
-          )}
+          {room.game && <button onClick={() => start(room.game as GameId)}>🔁 Replay</button>}
           <button onClick={() => socket.emit('host:lobby')}>🏠 Lobby</button>
         </div>
       )}
