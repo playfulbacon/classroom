@@ -15,10 +15,13 @@ import type {
 import * as sfx from '../sfx';
 import {
   ISO_DIR,
+  HOP_DUR,
   SCENE_BG,
+  ST_FALLEN,
   ST_FINISHED,
   ST_RUN,
   ST_STONE,
+  FERRY_TOP,
   addLights,
   applyTier,
   buildField,
@@ -29,6 +32,7 @@ import {
   subCellOffset,
   turnToStone,
   updateAvatarMotion,
+  ferryMeshFor,
   followFerry,
   lerpPlatforms,
   type Avatar,
@@ -368,11 +372,14 @@ export function createMedusaRenderer(
       av.cellCol = col;
       av.cellLane = lane;
       const ferryCell =
-        (fieldHandles?.pitKeys.has(lane * 1000 + col) ?? false) && state !== ST_FINISHED;
+        (fieldHandles?.pitKeys.has(lane * 1000 + col) ?? false) &&
+        state !== ST_FINISHED &&
+        state !== ST_FALLEN;
       if (Math.abs(tx - av.tx) > 0.001 || Math.abs(tz - av.tz) > 0.001) {
-        if (av.onFerry && ferryCell) {
-          // Still riding: the server cell drifts with the ferry — no new
-          // hop; followFerry() keeps the avatar glued to the slab.
+        if ((av.onFerry || av.attachAfter) && ferryCell) {
+          // Still riding (or mid-boarding-hop): the server cell drifts with
+          // the ferry — NEVER a new hop. followFerry()/the per-frame
+          // retarget keep the avatar glued to the slab.
           av.tx = tx;
           av.tz = tz;
         } else {
@@ -380,6 +387,8 @@ export function createMedusaRenderer(
           // slab's ACTUAL position, then attach), or off one.
           av.fromX = av.x;
           av.fromZ = av.z;
+          av.fromY = av.onFerry ? FERRY_TOP : 0;
+          av.toY = ferryCell ? FERRY_TOP : 0;
           av.tx = tx;
           av.tz = tz;
           av.hopStart = clockT;
@@ -402,6 +411,13 @@ export function createMedusaRenderer(
           av.stoneAt = clockT;
           turnToStone(av);
           sfx.crack();
+        }
+        if (state === ST_FALLEN) {
+          // Blind hop into open air — the arc plays out, then the sink
+          // (updateAvatarMotion) swallows them. Dust marks the spot.
+          av.onFerry = false;
+          av.fallAt = clockT + HOP_DUR;
+          spawnDust(av.tx, av.tz);
         }
         av.state = state;
       }
@@ -450,11 +466,21 @@ export function createMedusaRenderer(
       overlay.height = Math.round(h * dpr);
     }
 
-    for (const av of avatars.values()) updateAvatarMotion(av, dt, clockT);
     if (fieldHandles) {
       lerpPlatforms(fieldHandles, platformTargets, dt);
+      // A boarding hop chases the slab's LIVE position so it lands exactly
+      // on it — then followFerry glues the rider on with zero drift.
       for (const av of avatars.values()) {
-        if (av.onFerry && av.hopStart < 0) followFerry(av, fieldHandles, dt);
+        if (av.attachAfter && av.hopStart >= 0) {
+          const mesh = ferryMeshFor(av, fieldHandles);
+          if (mesh) av.tx = mesh.position.x + subCellOffset(av.slot)[0] * 0.3;
+        }
+      }
+    }
+    for (const av of avatars.values()) updateAvatarMotion(av, dt, clockT);
+    if (fieldHandles) {
+      for (const av of avatars.values()) {
+        if (av.onFerry && av.hopStart < 0) followFerry(av, fieldHandles);
       }
     }
     updateHead(dt);
@@ -779,11 +805,13 @@ export function createMedusaRenderer(
 
     // Tallies.
     const stones = s.players.filter((p) => p[3] === ST_STONE).length;
+    const fallen = s.players.filter((p) => p[3] === ST_FALLEN).length;
     ctx.textAlign = 'right';
     ctx.font = `700 ${Math.round(h * 0.03)}px system-ui`;
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.fillText(
-      `🏃 ${s.aliveCount}   🏁 ${s.finished.length}   🗿 ${stones}`,
+      `🏃 ${s.aliveCount}   🏁 ${s.finished.length}   🗿 ${stones}` +
+        (fallen > 0 ? `   🕳 ${fallen}` : ''),
       w - h * 0.03,
       h * 0.03,
     );
@@ -858,10 +886,12 @@ export function createMedusaRenderer(
         );
       });
       const stones2 = s.players.filter((p) => p[3] === ST_STONE).length;
+      const fallen2 = s.players.filter((p) => p[3] === ST_FALLEN).length;
       ctx.font = `700 ${Math.round(h * 0.032)}px system-ui`;
       ctx.fillStyle = '#b9c0e0';
       ctx.fillText(
-        `${s.finished.length} escaped · ${stones2} statues`,
+        `${s.finished.length} escaped · ${stones2} statues` +
+          (fallen2 > 0 ? ` · ${fallen2} fell` : ''),
         w / 2,
         h / 2 + ph * 0.4,
       );

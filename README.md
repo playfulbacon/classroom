@@ -39,8 +39,9 @@ and a tap rotates your piece.
 ### 🐍 Medusa
 Red light, green light — with Crossy Road controls, rendered in real 3D on
 the big screen. Tap to hop toward Medusa at the far end of an
-obstacle-riddled field; swipe to dodge (or hop back). **Nothing on the
-field is deadly** — petrification is the only way out of the round:
+obstacle-riddled field; swipe to dodge (or hop back). For anyone who can
+see, **nothing on the field is deadly** — obstacles block, they don't
+swallow (in eye mode, running blind changes that — see below):
 
 - **Pits** block your hop; you just bounce off them.
 - **Chasms** span the whole field and are crossed on **ferry platforms**
@@ -65,10 +66,17 @@ README there).
 the real Medusa rules — it's about whether your **eyes are open**, never
 whether you move. When she turns, the projector **cuts to her face,
 fullscreen**, and there is exactly one safe state, verified by the front
-camera: **close your eyes** and keep running blind — memorize the route.
-Getting caught with your eyes open fills a per-player **gaze meter**
-(~1s to stone); hiding from the camera fills it slowly (~2.5s) — never
-an advantage, just a slower death. Stone **creeps up you in tiers** that
+camera: **close your eyes** and keep running blind — memorize the route,
+because **blind hops fall into pits**: while her gaze is up, a hop made
+with closed eyes into an open pit, chasm water, or collapsed ground
+swallows you (🕳 fallen, out of the round). Ferry crossings are the
+exception — a mistimed blind boarding just bumps the ferry works and
+bounces. Getting caught with your eyes open is nearly fatal: it fills
+your per-player **gaze meter** in ~0.5s; hiding from the camera fills it
+slowly (~2.5s) — never an advantage, just a slower death. Your phone
+buzzes hard when she starts to turn (**shut your eyes**) and buzzes again
+when she looks away (**open, run**), so you never need the screen during
+red. Stone **creeps up you in tiers** that
 slow your hops before it claims you, only provably-open frames raise
 them, and tiers decay during green — redemption is possible. Her gaze is
 a **sweeping cone**, and statues block it: survivors hide behind the
@@ -105,8 +113,9 @@ rivals; in Team Puzzles they pathfind to their team's assembly spot, and when
 a group mixes bots with humans, the bots come and assemble around the real
 player; in Medusa they pathfind around the obstacles, wait for and ride the
 ferries, freeze on red in classic mode, and in eye mode simulate gaze
-discipline — some close their eyes and run blind, some get caught staring,
-a few "have no camera" and meet the slow death. Add and remove them from
+discipline — some close their eyes and run blind (and the gamblers among
+them occasionally drift off the route and fall into a pit), some get
+caught staring, a few "have no camera" and meet the slow death. Add and remove them from
 the lobby between rounds.
 
 For phones on the same network, use the LAN URL Vite prints (e.g.

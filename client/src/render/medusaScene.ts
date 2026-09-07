@@ -13,6 +13,10 @@ export const HOP_DUR = 0.2;
 export const ST_RUN = 0;
 export const ST_STONE = 1;
 export const ST_FINISHED = 2;
+export const ST_FALLEN = 3;
+
+// Ferry slab top: a rider stands this far above the ground plane.
+export const FERRY_TOP = 0.16;
 
 export const SCENE_BG = 0x10142a;
 
@@ -33,6 +37,8 @@ export interface Avatar {
   hopStart: number; // seconds, -1 when idle
   fromX: number;
   fromZ: number;
+  fromY: number; // hop endpoint heights: 0 on ground, FERRY_TOP on a slab
+  toY: number;
   // Ferry riding: after a boarding hop lands (attachAfter), the avatar is
   // attached to the platform mesh and follows it continuously.
   onFerry: boolean;
@@ -41,6 +47,7 @@ export interface Avatar {
   cellLane: number;
   state: number;
   stoneAt: number;
+  fallAt: number; // when the blind hop landed in the pit (sink start)
   tier: number; // 0..2 — how far the stone has crept
   bobPhase: number;
   pingUntil: number;
@@ -335,12 +342,15 @@ export function makeAvatar(slot: number, color: string, parent: THREE.Object3D):
     hopStart: -1,
     fromX: 0,
     fromZ: 0,
+    fromY: 0,
+    toY: 0,
     onFerry: false,
     attachAfter: false,
     cellCol: 0,
     cellLane: 0,
     state: ST_RUN,
     stoneAt: 0,
+    fallAt: 0,
     tier: 0,
     bobPhase: (slot % 17) * 0.4,
     pingUntil: 0,
@@ -383,11 +393,11 @@ export function setBlindfold(av: Avatar, on: boolean) {
 // positioned by followFerry() instead of the ground branch.
 export function updateAvatarMotion(av: Avatar, dt: number, clockT: number) {
   if (av.hopStart >= 0) {
-    // Hop interpolation.
+    // Hop interpolation (endpoint heights blend ground ↔ ferry slab).
     const p = Math.min(1, (clockT - av.hopStart) / HOP_DUR);
     av.x = av.fromX + (av.tx - av.fromX) * p;
     av.z = av.fromZ + (av.tz - av.fromZ) * p;
-    const hopY = Math.sin(p * Math.PI) * 0.32;
+    const hopY = av.fromY + (av.toY - av.fromY) * p + Math.sin(p * Math.PI) * 0.32;
     av.group.position.set(av.x, hopY, av.z);
     // Squash on landing.
     const squash = p > 0.85 ? 1 - (1 - (1 - p) / 0.15) * 0.15 : 1;
@@ -396,7 +406,17 @@ export function updateAvatarMotion(av: Avatar, dt: number, clockT: number) {
       av.hopStart = -1;
       av.onFerry = av.attachAfter; // boarding hop landed → ride
       av.attachAfter = false;
+      if (av.state === ST_FALLEN) av.fallAt = clockT; // sink starts on landing
     }
+  } else if (av.state === ST_FALLEN) {
+    // The blind hop landed in open air: sink into the dark, spinning, gone.
+    const p = Math.min(1, (clockT - av.fallAt) / 0.55);
+    const s = Math.max(0.25, 1 - p * 0.75);
+    av.group.position.set(av.x, -1.4 * p * p, av.z);
+    av.group.scale.set(s, s, s);
+    av.group.rotation.y += dt * 7;
+    av.group.visible = p < 1;
+    return;
   } else if (!av.onFerry) {
     av.group.position.set(av.x, 0, av.z);
     av.group.scale.set(1, 1, 1);
@@ -417,22 +437,26 @@ export function updateAvatarMotion(av: Avatar, dt: number, clockT: number) {
   }
 }
 
-// A rider between hops: track the ferry slab continuously (with the
-// avatar's own little sub-cell offset), so the ride is perfectly smooth.
-export function followFerry(av: Avatar, handles: FieldHandles, dt: number) {
-  let mesh: THREE.Mesh | null = null;
+// The rider's platform mesh, by the server cell it currently occupies.
+export function ferryMeshFor(av: Avatar, handles: FieldHandles): THREE.Mesh | null {
   for (const [id, def] of handles.platformDefs) {
     if (def.lane === av.cellLane && av.cellCol >= def.c0 && av.cellCol <= def.c1) {
-      mesh = handles.platformMeshes.get(id) ?? null;
-      break;
+      return handles.platformMeshes.get(id) ?? null;
     }
   }
+  return null;
+}
+
+// A rider between hops is GLUED to the slab: the slab's own motion is
+// already smoothed (lerpPlatforms), so copying its position verbatim is
+// what makes the ride perfectly smooth — any chasing here would wobble.
+export function followFerry(av: Avatar, handles: FieldHandles) {
+  const mesh = ferryMeshFor(av, handles);
   if (!mesh) return;
   const [ox, oz] = subCellOffset(av.slot);
-  const k = 1 - Math.exp(-14 * dt);
-  av.x += (mesh.position.x + ox * 0.3 - av.x) * k;
-  av.z += (av.cellLane + oz * 0.3 - av.z) * k;
-  av.group.position.set(av.x, 0.16, av.z);
+  av.x = av.tx = mesh.position.x + ox * 0.3;
+  av.z = av.tz = av.cellLane + oz * 0.3;
+  av.group.position.set(av.x, FERRY_TOP, av.z);
   av.group.scale.set(1, 1, 1);
 }
 

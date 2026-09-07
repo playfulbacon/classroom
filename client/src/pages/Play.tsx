@@ -469,7 +469,7 @@ function FeedbackOverlay({
           {eyes === 1 ? (
             <>
               <span className="fb-emoji">😑</span>
-              <span>EYES CLOSED — GO!</span>
+              <span>EYES CLOSED — GO! MIND THE PITS</span>
             </>
           ) : eyes === 2 ? (
             <>
@@ -498,6 +498,8 @@ const BUZZ_PATTERNS: Record<BuzzType, number[]> = {
   eliminated: [90, 60, 250],
   locked: [60, 50, 60, 50, 220],
   creep: [70, 40, 70], // the stone crept up a tier
+  warn: [110, 60, 110, 60, 200], // she's about to turn — SHUT YOUR EYES
+  clear: [45, 45, 45], // she's turned away — eyes open, run
 };
 
 export function Play() {
@@ -795,6 +797,19 @@ export function Play() {
         </div>
       );
     }
+    if (st === 'fallen') {
+      return (
+        <div className="status-screen" style={{ background: '#1c1410' }}>
+          {reconnectBanner}
+          <div className="big-num">{num}</div>
+          <h2>🕳 You fell!</h2>
+          <div className="sub">
+            A blind hop into open air — the pit swallowed you. Running with
+            your eyes closed is fast, but the ground doesn’t care.
+          </div>
+        </div>
+      );
+    }
     if (st === 'finished') {
       return (
         <div className="status-screen" style={{ background: '#245c36' }}>
@@ -838,7 +853,7 @@ export function Play() {
           <div className="big-num" style={{ opacity: 0.25 }}>{num}</div>
           <div className="hint">
             {me.eyeMode
-              ? 'TAP to run · CLOSE YOUR EYES when she turns — and keep going, blind!'
+              ? 'TAP to run · CLOSE YOUR EYES when she turns — run blind, but pits swallow blind hops!'
               : 'TAP to run · swipe to dodge pits · watch the big screen — FREEZE when she turns!'}
           </div>
           <div className="hint" style={{ opacity: 0.7 }}>

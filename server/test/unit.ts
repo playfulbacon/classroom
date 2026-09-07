@@ -546,17 +546,18 @@ console.log('unit: medusa crumbling ground OK');
     }
   };
 
-  // (a) CAUGHT fills in ~1s, raising tiers 1 and 2 on the way (with buzzes).
+  // (a) CAUGHT is nearly fatal: the meter fills in ~0.45s, raising tiers 1
+  // and 2 on the way (with buzzes).
   {
     const { game, internals, buzzes } = makeMedusa(2, true);
     const r = place(internals, 1);
     holdRed(internals, 10);
-    run(game, internals, 1, 2, 0.9, 16); // 0.8s of caught
-    assert.equal(r.state, 0, 'still flesh at 0.8s');
-    assert.ok(r.meter > 0.7 && r.meter < 0.9, `caught fill rate (meter ${r.meter})`);
+    run(game, internals, 1, 2, 0.9, 7); // 0.35s of caught
+    assert.equal(r.state, 0, 'still flesh at 0.35s');
+    assert.ok(r.meter > 0.7 && r.meter < 0.85, `caught fill rate (meter ${r.meter})`);
     assert.equal(r.tier, 2, 'crossed both tier thresholds');
     assert.ok(buzzes.some(([slot, type]) => slot === 1 && type === 'creep'), 'creep buzz');
-    run(game, internals, 1, 2, 0.9, 6);
+    run(game, internals, 1, 2, 0.9, 5);
     assert.equal(r.state, 1, 'meter full → statue');
   }
 
@@ -655,6 +656,47 @@ console.log('unit: medusa crumbling ground OK');
     game.input(1, { t: 'hop', d: 'f' });
     assert.equal(r.col, 6, 'hop lands during red in v2');
     assert.equal(r.state, 0, 'the hop itself never petrifies');
+  }
+
+  // (j) Blind hops are deadly: with provably CLOSED eyes while her gaze is
+  // up, a pit swallows the hop — the runner falls in and is out.
+  {
+    const { game, internals } = makeMedusa(2, true);
+    const r = place(internals, 1);
+    holdRed(internals, 10);
+    internals.platforms.length = 0; // no ferry can save this pit
+    internals.pits.add(r.lane * 24 + 6);
+    run(game, internals, 1, 1, 0.9, 2); // eyes closed, eff settles
+    game.input(1, { t: 'hop', d: 'f' });
+    assert.equal(r.state, 3, 'blind hop into a pit → fallen');
+    assert.equal(r.col, 6, 'they fell INTO the pit cell');
+  }
+
+  // (k) The same pit only bounces anyone who can see: eyes open during red,
+  // or eyes closed while her gaze is down (green).
+  {
+    const { game, internals } = makeMedusa(2, true);
+    const r = place(internals, 1);
+    holdRed(internals, 10);
+    internals.platforms.length = 0;
+    internals.pits.add(r.lane * 24 + 6);
+    run(game, internals, 1, 2, 0.9, 2); // eyes OPEN — sighted
+    game.input(1, { t: 'hop', d: 'f' });
+    assert.equal(r.col, 5, 'a sighted hop at a pit still bounces');
+    assert.equal(r.state, 0);
+  }
+  {
+    const { game, internals } = makeMedusa(2, true);
+    const r = place(internals, 1);
+    internals.t = 10;
+    internals.gaze = 'green';
+    internals.gazeUntil = 1000;
+    internals.platforms.length = 0;
+    internals.pits.add(r.lane * 24 + 6);
+    run(game, internals, 1, 1, 0.9, 2); // eyes closed but she's not looking
+    game.input(1, { t: 'hop', d: 'f' });
+    assert.equal(r.col, 5, 'closed eyes on green — the pit still bounces');
+    assert.equal(r.state, 0);
   }
 
   // (i) Stone slows: tiers stretch the hop cooldown.

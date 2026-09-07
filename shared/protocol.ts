@@ -117,11 +117,14 @@ export interface PuzzleSnapshot {
 
 export type MedusaGazeState = 'green' | 'turning' | 'red' | 'returning';
 
-// Player states in the snapshot tuple. Petrification is the only elimination:
-// pits, chasms and collapsed ground BLOCK movement, they never swallow anyone.
+// Player states in the snapshot tuple. Pits, chasms and collapsed ground
+// BLOCK movement for anyone who can see — but a hop made with provably
+// CLOSED eyes while Medusa's gaze is up goes in blind: the pit swallows you
+// (MEDUSA_FALLEN). That's the gamble of running blind at full speed.
 export const MEDUSA_RUNNING = 0;
 export const MEDUSA_STONE = 1;
 export const MEDUSA_FINISHED = 2;
+export const MEDUSA_FALLEN = 3;
 
 // Gaze-state codes (phone → server report, and the gz element in the player
 // tuple). The rule is pure open/closed: during red, CLOSED eyes are the one
@@ -215,14 +218,21 @@ export interface MeState {
   rotationEnabled?: boolean;
   teamRank?: number; // 1-based finish position once the team locks
   // Medusa
-  medusaState?: 'running' | 'stone' | 'finished';
+  medusaState?: 'running' | 'stone' | 'finished' | 'fallen';
   col?: number; // current progress column
   fieldLength?: number;
   eyeMode?: boolean; // room has eye mode on — the phone should arm its camera
   tier?: number; // stone tier 0..2 (how far the stone has crept)
 }
 
-export type BuzzType = 'bumped' | 'eliminated' | 'locked' | 'go' | 'creep';
+export type BuzzType =
+  | 'bumped'
+  | 'eliminated'
+  | 'locked'
+  | 'go'
+  | 'creep'
+  | 'warn' // Medusa is about to turn toward the field — shut your eyes
+  | 'clear'; // she's turned away — eyes open, all clear
 
 // ---------------------------------------------------------------------------
 // Socket event payloads

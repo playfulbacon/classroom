@@ -3,6 +3,7 @@ import {
   GZ_CLASSIC,
   GZ_CLOSED,
   GZ_UNKNOWN,
+  MEDUSA_FALLEN,
   MEDUSA_FINISHED,
   MEDUSA_RUNNING,
   MEDUSA_STONE,
@@ -40,7 +41,7 @@ const DROPOUT_GRACE = 0.5; // brief tracking dropouts keep the previous state
 const CLOSED_LINGER = 1.5; // eyes-closed heads drift out of frame — linger longer
 const GAZE_FRESH = 0.8; // reports older than this are UNKNOWN
 const CAUGHT_CONF = 0.6; // below this, an eyes-open report degrades to UNKNOWN
-const FILL_OPEN = 1 / 1.0; // meter/s while her gaze meets open eyes
+const FILL_OPEN = 1 / 0.45; // meter/s while her gaze meets open eyes — a peek is nearly fatal
 const FILL_UNKNOWN = 1 / 2.5; // the camera-hider's slow death
 const DRAIN_SAFE = 1 / 1.5; // eyes-closed recovery during red
 const DRAIN_GREEN = 1 / 15; // slow redemption while she looks away
@@ -55,7 +56,8 @@ const PULSE_EVERY = 4; // personal state pulse every 4th tick (5 Hz)
 type PlayerState =
   | typeof MEDUSA_RUNNING
   | typeof MEDUSA_STONE
-  | typeof MEDUSA_FINISHED;
+  | typeof MEDUSA_FINISHED
+  | typeof MEDUSA_FALLEN;
 
 interface Runner {
   slot: number;
@@ -201,14 +203,25 @@ export class Medusa implements GameModule {
     return this.platforms.some((p) => p.lane === lane && col >= p.c0 && col <= p.c1);
   }
 
-  // Nothing on this field is deadly: pits, chasms and collapsed crumble
-  // simply refuse the hop. A pit cell is passable only via an aligned ferry.
+  // Pits, chasms and collapsed crumble refuse the hop for anyone who can
+  // see. A pit cell is passable only via an aligned ferry.
   private passable(col: number, lane: number): boolean {
     if (col < 0 || col >= LENGTH || lane < 0 || lane >= this.lanes) return false;
     const k = this.pitKey(col, lane);
     if (this.crumbleStage.get(k) === 2) return false;
     if (this.pits.has(k)) return this.platformAt(col, lane) !== null;
     return true;
+  }
+
+  // A cell that swallows a BLIND hop: an open pit/chasm or collapsed
+  // ground. Cells on a ferry ROUTE never swallow anyone — a mistimed blind
+  // boarding bumps the ferry works and bounces (boarding shouldn't be a
+  // frame-perfect death lottery). Field edges just bounce too.
+  private deadly(col: number, lane: number): boolean {
+    if (col < 0 || col >= LENGTH || lane < 0 || lane >= this.lanes) return false;
+    const k = this.pitKey(col, lane);
+    if (this.crumbleStage.get(k) === 2) return true;
+    return this.pits.has(k) && !this.onFerryRoute(col, lane);
   }
 
   private greenDuration(): number {
@@ -290,8 +303,20 @@ export class Medusa implements GameModule {
     else return;
     if (col === runner.col && lane === runner.lane) return;
     // Blocked hops (bounds, pits, chasm water, collapsed ground, a ferry
-    // that isn't there) are refused on the spot — nothing swallows anyone.
-    if (!this.passable(col, lane)) return;
+    // that isn't there) are refused on the spot for anyone who can see.
+    // But a hop made with provably CLOSED eyes while her gaze is up is a
+    // blind hop — the pit swallows it. That's the price of running blind.
+    if (!this.passable(col, lane)) {
+      if (
+        this.ctx.options.medusaEyes &&
+        this.gaze !== 'green' &&
+        runner.eff === GZ_CLOSED &&
+        this.deadly(col, lane)
+      ) {
+        this.fall(runner, col, lane);
+      }
+      return;
+    }
     runner.col = col;
     runner.lane = lane;
     const key = this.pitKey(col, lane);
@@ -312,7 +337,7 @@ export class Medusa implements GameModule {
     if (!this.ctx.isBot(slot)) this.ctx.emitMe(slot); // phone progress bar
   }
 
-  private buzzRunners(type: 'go' | 'bumped') {
+  private buzzRunners(type: 'go' | 'bumped' | 'warn' | 'clear') {
     for (const r of this.runners.values()) {
       if (r.state === MEDUSA_RUNNING) this.ctx.buzz(r.slot, type);
     }
@@ -321,6 +346,18 @@ export class Medusa implements GameModule {
   private petrify(runner: Runner) {
     runner.state = MEDUSA_STONE;
     this.shadowDirty = true; // a new statue casts new cover
+    this.ctx.buzz(runner.slot, 'eliminated');
+    this.ctx.emitMe(runner.slot);
+    this.checkEnd();
+  }
+
+  // A blind hop into open air: the runner drops into the pit cell and is
+  // out. No statue — a fallen runner casts no cover for the living.
+  private fall(runner: Runner, col: number, lane: number) {
+    runner.col = col;
+    runner.lane = lane;
+    runner.ride = null;
+    runner.state = MEDUSA_FALLEN;
     this.ctx.buzz(runner.slot, 'eliminated');
     this.ctx.emitMe(runner.slot);
     this.checkEnd();
@@ -522,7 +559,14 @@ export class Medusa implements GameModule {
     if (Math.random() > brain.eagerness * (blind ? 0.3 : 1)) return null;
     if (blind && Math.random() < 0.35) {
       const dirs = ['f', 'f', 'l', 'r'] as const;
-      return { t: 'hop', d: dirs[Math.floor(Math.random() * dirs.length)] };
+      const d = dirs[Math.floor(Math.random() * dirs.length)];
+      const tc = runner.col + (d === 'f' ? 1 : 0);
+      const tl = runner.lane + (d === 'l' ? -1 : d === 'r' ? 1 : 0);
+      // Pits swallow blind hops now, so most bots "remember" where the
+      // edges are even with their eyes shut; the gamblers (high risk)
+      // send it anyway — and some of them WILL fall. That's the show.
+      if (brain.risk > 0.75 || !this.deadly(tc, tl)) return { t: 'hop', d };
+      return null;
     }
     // BFS to the finish around obstacles — greedy dodging can trap a runner
     // in a pit pocket forever; the generated fields are always solvable.
@@ -580,7 +624,7 @@ export class Medusa implements GameModule {
   personal(slot: number): Partial<MeState> {
     const runner = this.runners.get(slot);
     if (!runner) return { waiting: true };
-    const states = ['running', 'stone', 'finished'] as const;
+    const states = ['running', 'stone', 'finished', 'fallen'] as const;
     const me: Partial<MeState> = {
       medusaState: states[runner.state],
       col: runner.col,
@@ -617,14 +661,14 @@ export class Medusa implements GameModule {
     if (this.t >= this.gazeUntil) {
       if (this.gaze === 'green') {
         this.scheduleGaze('turning', TURN_TIME);
-        this.buzzRunners('bumped');
+        this.buzzRunners('warn'); // she's about to face you — shut your eyes
       } else if (this.gaze === 'turning') {
         this.scheduleGaze('red', 2 + Math.random() * 2.5);
       } else if (this.gaze === 'red') {
         this.scheduleGaze('returning', TURN_TIME);
       } else {
         this.scheduleGaze('green', this.greenDuration());
-        this.buzzRunners('go');
+        this.buzzRunners('clear'); // she's turned away — eyes open, run
       }
     }
 
@@ -651,7 +695,9 @@ export class Medusa implements GameModule {
     if (this.crumbleStage.size > 0) {
       const occupied = new Set<number>();
       for (const r of this.runners.values()) {
-        if (r.state !== MEDUSA_FINISHED) occupied.add(this.pitKey(r.col, r.lane));
+        if (r.state === MEDUSA_RUNNING || r.state === MEDUSA_STONE) {
+          occupied.add(this.pitKey(r.col, r.lane));
+        }
       }
       for (const [k, stage] of this.crumbleStage) {
         if (stage !== 1) continue;
