@@ -209,7 +209,7 @@ const GAZE_ICONS = ['🛡', '😑', '👁', '❔'] as const; // shield/closed/ca
 // your phone" calibration → tiny mirrored self-preview with a live state
 // icon. Detection runs entirely on the phone; only a {state, confidence}
 // pair is sent. Unmounting stops the camera.
-function MedusaGazeCam() {
+function MedusaGazeCam({ dbg }: { dbg?: React.MutableRefObject<Record<string, string>> }) {
   const [status, setStatus] = useState<GazeCamStatus>(() => {
     try {
       const remembered = sessionStorage.getItem('ca-eyecam');
@@ -221,6 +221,7 @@ function MedusaGazeCam() {
     return 'ask';
   });
   const [gaze, setGaze] = useState<GazeState>({ s: 3, c: 1 });
+  const [failDetail, setFailDetail] = useState('');
   const previewRef = useRef<HTMLDivElement>(null);
   const trackerRef = useRef<GazeTracker | null>(null);
   const lastRef = useRef<GazeState | null>(null);
@@ -244,10 +245,12 @@ function MedusaGazeCam() {
         socket.emit('input', { t: 'gaze', s: s.s, c: Math.round(s.c * 100) / 100 });
       });
       if (cancelled) {
-        if (typeof result === 'object') result.stop();
+        if (!('error' in result)) result.stop();
         return;
       }
-      if (result === 'denied' || result === 'unsupported') {
+      if ('error' in result) {
+        setFailDetail(result.detail);
+        if (dbg) dbg.current['cam'] = `FAILED — ${result.detail}`;
         setStatus('failed');
         return;
       }
@@ -263,15 +266,21 @@ function MedusaGazeCam() {
     };
   }, [status]);
 
-  // Heartbeat so the server can tell fresh reports from a dead camera.
+  // Heartbeat so the server can tell fresh reports from a dead camera —
+  // and, when the ?debug overlay is up, mirror the tracker's internals.
   useEffect(() => {
     if (status !== 'on' && status !== 'calibrating') return;
     const iv = setInterval(() => {
       const s = lastRef.current;
       if (s) socket.emit('input', { t: 'gaze', s: s.s, c: Math.round(s.c * 100) / 100 });
+      if (dbg && trackerRef.current) {
+        dbg.current['cam'] = status;
+        Object.assign(dbg.current, trackerRef.current.debug);
+        if (s) dbg.current['sent'] = `s=${s.s} c=${s.c.toFixed(2)}`;
+      }
     }, 250);
     return () => clearInterval(iv);
-  }, [status]);
+  }, [status, dbg]);
 
   useEffect(
     () => () => {
@@ -319,6 +328,9 @@ function MedusaGazeCam() {
       <div className="eyecam-chip">
         📷 {status === 'failed' ? 'camera unavailable — ' : ''}she finds you slowly:
         hide behind statues
+        {status === 'failed' && failDetail && (
+          <div className="eyecam-chip-detail">{failDetail}</div>
+        )}
       </div>
     );
   }
@@ -328,6 +340,26 @@ function MedusaGazeCam() {
         {status === 'calibrating' ? '🎯' : GAZE_ICONS[gaze.s]}
       </span>
       {status === 'calibrating' && <span className="eyecam-cal">look at your phone…</span>}
+    </div>
+  );
+}
+
+// Live diagnostics for eye mode, shown when the page URL carries ?debug —
+// camera pipeline state, raw detection scores, what's being sent, and what
+// the server thinks of you (via the shield stream + me state).
+function DebugPanel({ dbgRef }: { dbgRef: React.MutableRefObject<Record<string, string>> }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const iv = setInterval(() => setTick((t) => t + 1), 250);
+    return () => clearInterval(iv);
+  }, []);
+  return (
+    <div className="debug-panel">
+      {Object.entries(dbgRef.current).map(([k, v]) => (
+        <div key={k}>
+          <b>{k}</b> {v}
+        </div>
+      ))}
     </div>
   );
 }
@@ -389,6 +421,14 @@ export function Play() {
   const shieldRef = useRef<{ msg: MedusaShieldMsg; at: number } | null>(null);
   const colorsRef = useRef(new Map<number, string>());
   const lastMeterRef = useRef(0);
+  const dbgRef = useRef<Record<string, string>>({});
+  const [debugOn] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).has('debug');
+    } catch {
+      return false;
+    }
+  });
   const [connected, setConnected] = useState(socket.connected);
   const [joinError, setJoinError] = useState('');
 
@@ -431,6 +471,11 @@ export function Play() {
     };
     const onShield = (msg: MedusaShieldMsg) => {
       shieldRef.current = { msg, at: performance.now() };
+      dbgRef.current['server'] =
+        `gaze=${['green', 'turning', 'RED', 'returning'][msg.g[0]]} ` +
+        `meter=${msg.me[2]} tier=${msg.me[3]} ` +
+        `eff=${['shield', 'closed', 'caught', 'unknown'][msg.me[4]] ?? 'classic'} ` +
+        `@(${msg.me[0]},${msg.me[1]})`;
       // Escalating warning as the meter climbs: vibration at each threshold.
       const q = msg.me[2];
       const prev = lastMeterRef.current;
@@ -692,7 +737,19 @@ export function Play() {
         <TouchSurface
           onTap={() => sendInput({ t: 'hop', d: 'f' })}
           onFlick={(x, y) => {
-            const d = Math.abs(y) >= Math.abs(x) ? (y < 0 ? 'f' : 'b') : x < 0 ? 'l' : 'r';
+            // Swipes map to the world axes AS THEY APPEAR on the iso camera
+            // grid: forward reads as right-and-slightly-up on screen, the
+            // lane axis as down-right (screen y grows downward here).
+            const fScore = x * 0.85 - y * 0.31; // world +x (toward Medusa)
+            const rScore = x * 0.53 + y * 0.5; // world +z (lane + 1)
+            const d =
+              Math.abs(fScore) >= Math.abs(rScore)
+                ? fScore > 0
+                  ? 'f'
+                  : 'b'
+                : rScore > 0
+                  ? 'r'
+                  : 'l';
             sendInput({ t: 'hop', d });
           }}
           onHold={() => sendInput({ t: 'ping' })}
@@ -705,7 +762,8 @@ export function Play() {
             selfSlot={me.playerId}
           />
         )}
-        {me.eyeMode && <MedusaGazeCam />}
+        {me.eyeMode && <MedusaGazeCam dbg={debugOn ? dbgRef : undefined} />}
+        {debugOn && <DebugPanel dbgRef={dbgRef} />}
         <div className="controller-hud">
           <div className="big-num" style={{ opacity: 0.25 }}>{num}</div>
           <div className="hint">

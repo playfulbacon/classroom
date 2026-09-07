@@ -816,9 +816,10 @@ async function main() {
   assertGeometry(botPuzzle, '3x2 bots');
   console.log(`bots: solved a bots-only 3x2 puzzle (${botPuzzle.groupCount} groups, 4 phantoms)`);
 
-  // The same bots-only room must run a full Medusa round unaided: bots
-  // sprint on green, freeze on red (mostly), and at least someone escapes.
-  stage2.emit('host:start', { game: 'medusa' });
+  // The same bots-only room must run a full CLASSIC Medusa round unaided
+  // (eye mode is the default now, so opt out explicitly): bots sprint on
+  // green, freeze on red (mostly), and at least someone escapes.
+  stage2.emit('host:start', { game: 'medusa', options: { medusaEyes: false } });
   const botMedusa = await waitFor('bots-only medusa round to end', 110000, () => {
     const s = snap2 as MedusaSnapshot | null;
     return s?.kind === 'medusa' && s.phase === 'over' ? s : null;

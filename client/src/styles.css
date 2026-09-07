@@ -496,6 +496,37 @@ input {
   height: 100%;
 }
 
+.eyecam-chip-detail {
+  margin-top: 4px;
+  font-size: 10px;
+  opacity: 0.75;
+  max-width: 220px;
+  white-space: normal;
+}
+
+.debug-panel {
+  position: fixed;
+  left: 8px;
+  top: calc(96px + env(safe-area-inset-top));
+  z-index: 60;
+  pointer-events: none;
+  background: rgba(6, 8, 18, 0.82);
+  border: 1px solid #2a3155;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #9fe8b0;
+  max-width: 80vw;
+  word-break: break-word;
+}
+
+.debug-panel b {
+  color: #ffe066;
+  margin-right: 4px;
+}
+
 .eyecam-cal {
   position: absolute;
   left: 0;

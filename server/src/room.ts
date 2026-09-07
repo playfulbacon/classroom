@@ -55,7 +55,9 @@ export class Room {
     rotation: false,
     puzzleW: 2,
     puzzleH: 2,
-    medusaEyes: false,
+    // The camera rules ARE the game — untick 👁 in the lobby for the
+    // classic freeze-on-movement variant (no cameras needed).
+    medusaEyes: true,
   };
   private readonly images = new Map<string, Buffer>(); // insertion order = upload order
   private nextSlot = 1;

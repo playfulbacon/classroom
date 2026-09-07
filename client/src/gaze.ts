@@ -22,10 +22,20 @@ export interface GazeState {
 
 export interface GazeTracker {
   video: HTMLVideoElement; // mirrored self-preview, caller may mount it
+  // Live detection internals (blink score, look delta, head deviation, the
+  // on-phone score, raw vs committed state) — mutated every frame, for the
+  // ?debug overlay.
+  debug: Record<string, string>;
   // Sample ~baseline while the player looks at their phone; resolves true
   // when enough face frames were collected. Uncalibrated defaults still work.
   calibrate(ms?: number): Promise<boolean>;
   stop(): void;
+}
+
+// Why the camera pipeline couldn't start — `detail` names the failing step.
+export interface GazeFailure {
+  error: 'denied' | 'unsupported';
+  detail: string;
 }
 
 const CLOSE_AT = 0.55; // blink score to flip open → closed
@@ -37,8 +47,13 @@ const AGREE_FRAMES = 2; // other transitions commit faster
 
 export async function startGazeTracking(
   onState: (s: GazeState) => void,
-): Promise<GazeTracker | 'denied' | 'unsupported'> {
-  if (!navigator.mediaDevices?.getUserMedia) return 'unsupported';
+): Promise<GazeTracker | GazeFailure> {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return {
+      error: 'unsupported',
+      detail: 'no mediaDevices API — the camera needs HTTPS or localhost',
+    };
+  }
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -50,8 +65,9 @@ export async function startGazeTracking(
       },
       audio: false,
     });
-  } catch {
-    return 'denied';
+  } catch (err) {
+    const e = err as DOMException;
+    return { error: 'denied', detail: `getUserMedia ${e.name}: ${e.message}` };
   }
 
   let landmarker: FaceLandmarker;
@@ -69,9 +85,12 @@ export async function startGazeTracking(
     } catch {
       landmarker = await FaceLandmarker.createFromOptions(fileset, options('CPU'));
     }
-  } catch {
+  } catch (err) {
     for (const track of stream.getTracks()) track.stop();
-    return 'unsupported';
+    return {
+      error: 'unsupported',
+      detail: `FaceLandmarker init failed: ${(err as Error).message?.slice(0, 120)}`,
+    };
   }
 
   const video = document.createElement('video');
@@ -81,10 +100,13 @@ export async function startGazeTracking(
   video.style.transform = 'scaleX(-1)'; // mirror the self-view
   try {
     await video.play();
-  } catch {
+  } catch (err) {
     for (const track of stream.getTracks()) track.stop();
     landmarker.close();
-    return 'unsupported';
+    return {
+      error: 'unsupported',
+      detail: `video.play failed: ${(err as Error).message?.slice(0, 120)}`,
+    };
   }
 
   // Calibration baseline: what "looking at my phone" measures like for this
@@ -95,6 +117,7 @@ export async function startGazeTracking(
   let calibrating: { until: number; look: number[]; f: { x: number; y: number; z: number }[] } | null =
     null;
 
+  const debug: Record<string, string> = {};
   let stopped = false;
   let committed: GazeCode = 3;
   let candidate: GazeCode | null = null;
@@ -112,10 +135,15 @@ export async function startGazeTracking(
   const classify = (): GazeState => {
     const result = landmarker.detectForVideo(video, performance.now());
     const cats = result.faceBlendshapes?.[0]?.categories;
-    if (!cats || cats.length === 0) return { s: 3, c: 1 };
+    if (!cats || cats.length === 0) {
+      debug.face = 'NOT SEEN';
+      return { s: 3, c: 1 };
+    }
+    debug.face = 'seen';
 
     const blink = (shape(cats, 'eyeBlinkLeft') + shape(cats, 'eyeBlinkRight')) / 2;
     closed = closed ? blink > OPEN_AT : blink > CLOSE_AT;
+    debug.blink = `${blink.toFixed(2)} → ${closed ? 'CLOSED' : 'open'}`;
     if (closed) return { s: 1, c: 1 };
 
     // Eyes are open — are they on the phone? Two signals, both measured as
@@ -150,6 +178,9 @@ export async function startGazeTracking(
     const eyePart = Math.max(0, Math.min(1, 0.5 + (lookDelta - baseLook) * 1.5));
     const headPart = Math.max(0, Math.min(1, 1 - angleDev / 0.5));
     const g = 0.6 * eyePart + 0.4 * headPart;
+    debug.look = `Δ${lookDelta.toFixed(2)} (base ${baseLook.toFixed(2)})`;
+    debug.head = `dev ${((angleDev * 180) / Math.PI).toFixed(0)}°`;
+    debug.onPhone = `g=${g.toFixed(2)} (enter ${SHIELD_ENTER} exit ${SHIELD_EXIT})`;
     const wasShield = committed === 0 || candidate === 0;
     if (g >= (wasShield ? SHIELD_EXIT : SHIELD_ENTER)) return { s: 0, c: 1 };
     // Off the phone with open eyes: caught, confidence by how clearly off.
@@ -163,6 +194,8 @@ export async function startGazeTracking(
       try {
         const { s, c } = classify();
         lastConf = c;
+        debug.raw = `${['shield', 'closed', 'caught', 'unknown'][s]} c=${c.toFixed(2)}`;
+        debug.committed = ['shield', 'closed', 'caught', 'unknown'][committed];
         if (s !== committed) {
           if (candidate === s) agree++;
           else {
@@ -189,6 +222,7 @@ export async function startGazeTracking(
 
   return {
     video,
+    debug,
     async calibrate(ms = 1500) {
       calibrating = { until: performance.now() + ms, look: [], f: [] };
       await new Promise((r) => setTimeout(r, ms));
