@@ -200,7 +200,7 @@ function PiecePreview({ group, quadrant, gw, gh, imageId }: PiecePreviewProps) {
   return <canvas ref={ref} width={170} height={170} className="piece-preview" />;
 }
 
-type GazeCamStatus = 'ask' | 'starting' | 'on' | 'off' | 'failed';
+type GazeCamStatus = 'starting' | 'on' | 'failed';
 
 const GAZE_ICONS: Record<number, string> = { 1: '😑', 2: '👁', 3: '❔' };
 const GAZE_WORDS: Record<number, string> = { 1: 'closed', 2: 'OPEN', 3: 'unknown' };
@@ -209,20 +209,12 @@ const GAZE_WORDS: Record<number, string> = { 1: 'closed', 2: 'OPEN', 3: 'unknown
 // the playground, and the in-round feedback overlay.
 const localGaze = { s: 3 as 1 | 2 | 3, at: 0 };
 
-// Shared front-camera lifecycle: consent → on-device eyes-open detection.
-// Detection runs entirely on the phone; only a {state, confidence} pair is
-// ever sent (when emitToServer). Unmounting stops the camera.
+// Shared front-camera lifecycle: on-device eyes-open detection. Camera
+// permission was already granted at the join gate, so tracking starts
+// immediately. Detection runs entirely on the phone; only a {state,
+// confidence} pair is ever sent (when emitToServer). Unmounting stops it.
 function useEyeTracking(emitToServer: boolean) {
-  const [status, setStatus] = useState<GazeCamStatus>(() => {
-    try {
-      const remembered = sessionStorage.getItem('ca-eyecam');
-      if (remembered === 'yes') return 'starting';
-      if (remembered === 'no') return 'off';
-    } catch {
-      // fine
-    }
-    return 'ask';
-  });
+  const [status, setStatus] = useState<GazeCamStatus>('starting');
   const [gaze, setGaze] = useState<GazeState>({ s: 3, c: 1 });
   const [failDetail, setFailDetail] = useState('');
   const previewRef = useRef<HTMLDivElement>(null);
@@ -291,33 +283,81 @@ function useEyeTracking(emitToServer: boolean) {
     [],
   );
 
-  const choose = (v: 'yes' | 'no') => {
+  return { status, gaze, failDetail, previewRef };
+}
+
+// The join gate: camera access is part of joining on mobile. Nobody enters
+// the room until the front camera is granted — Medusa needs to see your
+// eyes. Video never leaves the phone; only open/closed does.
+function CameraGate({ onReady }: { onReady: () => void }) {
+  const [state, setState] = useState<'idle' | 'asking' | 'failed'>('idle');
+  const [detail, setDetail] = useState('');
+  const attempted = useRef(false);
+
+  const request = async () => {
+    setState('asking');
     try {
-      sessionStorage.setItem('ca-eyecam', v);
+      const md = navigator.mediaDevices;
+      if (!md?.getUserMedia) {
+        throw new Error(
+          window.isSecureContext
+            ? 'no mediaDevices API in this browser'
+            : 'cameras need HTTPS (or localhost) — this page is plain http',
+        );
+      }
+      const stream = await md.getUserMedia({
+        video: { facingMode: 'user', width: 320, height: 240 },
+      });
+      // Permission is what we needed; the gaze tracker opens its own stream.
+      for (const t of stream.getTracks()) t.stop();
+      onReady();
+    } catch (e) {
+      setDetail(e instanceof Error ? (e.name === 'Error' ? e.message : e.name) : String(e));
+      setState('failed');
+    }
+  };
+
+  // If this phone already granted the camera this session, sail through
+  // without a tap (the browser resolves silently, no prompt).
+  useEffect(() => {
+    if (attempted.current) return;
+    attempted.current = true;
+    try {
+      if (sessionStorage.getItem('ca-eyecam') === 'yes') void request();
+    } catch {
+      // fine — wait for the tap
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const tap = () => {
+    try {
+      sessionStorage.setItem('ca-eyecam', 'yes');
     } catch {
       // fine
     }
-    setStatus(v === 'yes' ? 'starting' : 'off');
+    void request();
   };
-  return { status, gaze, failDetail, previewRef, choose };
-}
 
-function ConsentCard({ choose }: { choose: (v: 'yes' | 'no') => void }) {
   return (
-    <div className="eyecam-consent">
-      <h3>👁 Medusa&apos;s rules</h3>
+    <div className="cam-gate">
+      <h2>👁 Medusa needs to see your eyes</h2>
       <p>
-        When she turns: <b>close your eyes.</b> Your camera checks they&apos;re
-        really closed — video never leaves your phone, only open/closed does.
+        This game is played with your <b>front camera</b>: when Medusa turns,
+        you close your eyes — the camera checks they&apos;re really closed.
       </p>
       <p style={{ opacity: 0.75 }}>
-        No camera? Her gaze still finds you, slowly — hide behind statues.
+        Video never leaves your phone. Only &quot;open&quot; or
+        &quot;closed&quot; is sent.
       </p>
-      <button className="yes" onClick={() => choose('yes')}>
-        Use my camera
-      </button>
-      <button className="no" onClick={() => choose('no')}>
-        No camera
+      {state === 'failed' && (
+        <div className="cam-gate-fail">
+          Camera unavailable — {detail || 'permission denied'}. Allow camera
+          access for this site, then try again.
+        </div>
+      )}
+      <button className="cam-gate-btn" onClick={tap} disabled={state === 'asking'}>
+        {state === 'asking' ? 'Asking…' : state === 'failed' ? 'Try again' : 'Enable camera to join'}
       </button>
     </div>
   );
@@ -326,15 +366,11 @@ function ConsentCard({ choose }: { choose: (v: 'yes' | 'no') => void }) {
 // The small in-round camera widget: corner self-preview + live state icon.
 function MedusaGazeCam() {
   const cam = useEyeTracking(true);
-  if (cam.status === 'ask') return <ConsentCard choose={cam.choose} />;
-  if (cam.status === 'off' || cam.status === 'failed') {
+  if (cam.status === 'failed') {
     return (
       <div className="eyecam-chip">
-        📷 {cam.status === 'failed' ? 'camera unavailable — ' : ''}she finds you
-        slowly: hide behind statues
-        {cam.status === 'failed' && cam.failDetail && (
-          <div className="eyecam-chip-detail">{cam.failDetail}</div>
-        )}
+        📷 camera unavailable — she finds you slowly: hide behind statues
+        {cam.failDetail && <div className="eyecam-chip-detail">{cam.failDetail}</div>}
       </div>
     );
   }
@@ -345,42 +381,20 @@ function MedusaGazeCam() {
   );
 }
 
-// Demo meter rates — mirror the server's (FILL_OPEN / FILL_UNKNOWN /
-// DRAIN_SAFE) so the playground teaches the real timing.
-const DEMO_RATES: Record<number, number> = { 1: -1 / 1.5, 2: 1 / 1.0, 3: 1 / 2.5 };
-
 // The sensor playground: lives on the lobby screen whenever eye mode is on,
 // so every player meets the detector in a consequence-free moment — blink at
-// it, close your eyes, watch the demo meter chase you — BEFORE a round ever
-// puts petrification behind it. Trust is built here.
+// it, close your eyes, watch it read you — BEFORE a round ever puts
+// petrification behind it. Trust is built here.
 function EyePlayground() {
   const cam = useEyeTracking(false);
-  const [meter, setMeter] = useState(0);
-  const [gotcha, setGotcha] = useState(false);
-  useEffect(() => {
-    if (cam.status !== 'on') return;
-    const iv = setInterval(() => {
-      setMeter((m) => {
-        const next = m + (DEMO_RATES[localGaze.s] ?? 0) * 0.1;
-        if (next >= 1) {
-          setGotcha(true);
-          setTimeout(() => setGotcha(false), 1200);
-          return 0;
-        }
-        return Math.max(0, next);
-      });
-    }, 100);
-    return () => clearInterval(iv);
-  }, [cam.status]);
 
-  if (cam.status === 'ask') return <ConsentCard choose={cam.choose} />;
-  if (cam.status === 'off' || cam.status === 'failed') {
+  if (cam.status === 'failed') {
     return (
       <div className="playground playground-unknown">
         <div className="playground-emoji">📷</div>
-        <h2>No camera</h2>
+        <h2>Camera trouble</h2>
         <p>
-          {cam.failDetail || 'You declined the camera.'}
+          {cam.failDetail || 'The camera could not be started.'}
           <br />
           During red light her gaze will find you slowly — hide behind statues.
         </p>
@@ -391,33 +405,15 @@ function EyePlayground() {
   const cls = st === 1 ? 'playground-safe' : st === 2 ? 'playground-seen' : 'playground-unknown';
   return (
     <div className={`playground ${cls}`}>
-      {gotcha ? (
-        <>
-          <div className="playground-emoji">🗿</div>
-          <h2>PETRIFIED!</h2>
-          <p>That&apos;s what red light feels like. Close your eyes sooner!</p>
-        </>
-      ) : (
-        <>
-          <div className="playground-emoji">{GAZE_ICONS[st]}</div>
-          <h2>
-            {st === 1 ? 'HIDDEN' : st === 2 ? 'SHE CAN SEE YOU' : 'CAN’T FIND YOUR FACE'}
-          </h2>
-          <p>
-            {st === 1
-              ? 'Eyes closed — this is safety during red light.'
-              : st === 2
-                ? 'Eyes open — during red light this fills the meter below.'
-                : 'Hold the phone so it sees your face. Hiding is only a slower death.'}
-          </p>
-        </>
-      )}
-      <div className="playground-meter">
-        <div
-          className="playground-meter-fill"
-          style={{ width: `${Math.round(meter * 100)}%` }}
-        />
-      </div>
+      <div className="playground-emoji">{GAZE_ICONS[st]}</div>
+      <h2>{st === 1 ? 'HIDDEN' : st === 2 ? 'SHE CAN SEE YOU' : 'CAN’T FIND YOUR FACE'}</h2>
+      <p>
+        {st === 1
+          ? 'Eyes closed — this is safety during red light.'
+          : st === 2
+            ? 'Eyes open — during red light this is how she catches you.'
+            : 'Hold the phone so it sees your face. Hiding is only a slower death.'}
+      </p>
       <p className="playground-hint">
         Try it: blink slowly · close your eyes · cover the lens. This is exactly
         how Medusa will see you.
@@ -511,6 +507,9 @@ export function Play() {
   const lastMeterRef = useRef(0);
   const [connected, setConnected] = useState(socket.connected);
   const [joinError, setJoinError] = useState('');
+  // Camera access is part of joining: the join is not emitted (and nothing
+  // else renders) until the gate has a granted camera.
+  const [camReady, setCamReady] = useState(false);
 
   useEffect(() => {
     const creds = loadCreds();
@@ -519,6 +518,7 @@ export function Play() {
       return;
     }
     const doJoin = () => {
+      if (!camReady) return;
       socket.emit(
         'join',
         { code: creds.code, name: creds.name, token: creds.token },
@@ -578,7 +578,7 @@ export function Play() {
       socket.off('buzz', onBuzz);
       socket.off('pulse', onPulse);
     };
-  }, [navigate]);
+  }, [navigate, camReady]);
 
 
   // Keep the phone screen awake during play.
@@ -606,6 +606,11 @@ export function Play() {
   const sendInput = useCallback((payload: unknown) => {
     socket.emit('input', payload);
   }, []);
+
+  // Camera first: nobody enters the room without it.
+  if (!camReady) {
+    return <CameraGate onReady={() => setCamReady(true)} />;
+  }
 
   if (joinError) {
     return (

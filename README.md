@@ -88,11 +88,19 @@ playground** — a safe sandbox showing exactly what the sensor sees, with
 a demo meter and a mock petrify, so every player trusts the blink
 detection before the round starts.
 
-Detection runs entirely on the phone (MediaPipe face landmarks, blink
-only); **video never leaves the device** — only a tiny open/closed state
-code goes to the server. Players get a one-tap consent card first. Note:
-browsers only expose the camera on **HTTPS or localhost**, so eye mode
+**Camera access is part of joining**: the mobile join flow gates on the
+front camera — nobody enters the room until it's granted (the gate
+explains why and retries on failure). Detection runs entirely on the
+phone (MediaPipe face landmarks, blink only); **video never leaves the
+device** — only a tiny open/closed state code goes to the server. Note:
+browsers only expose the camera on **HTTPS or localhost**, so joining
 needs a deployed (or tunneled) HTTPS URL when phones join over LAN.
+
+Every Medusa round opens with a **narrated intro**: the rules appear
+over the visible field while a generated voice reads them ("Tap and
+swipe on your phone to race to the finish line… close your eyes or
+you'll turn to stone!"), a beat of silence, then the voice counts down
+"3, 2, 1, GO!" and the round begins.
 
 ## Quick start
 

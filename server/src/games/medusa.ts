@@ -22,6 +22,9 @@ import { generateField, type MedusaField } from './medusaField';
 
 const TICK_MS = 1000 / 20;
 const COUNTDOWN = 3;
+// The stage narrates the rules over the visible field, then signals
+// 'host:intro-done'; this cap keeps the round moving if no stage ever does.
+const INTRO_FALLBACK = 14;
 const TIME_LIMIT = 90; // seconds; at timeout Medusa's final gaze petrifies everyone
 const LENGTH = 24; // columns along the race axis; last column is the finish
 const GRACE = 0.3; // classic: seconds after red locks during which hops are forgiven
@@ -109,8 +112,9 @@ export class Medusa implements GameModule {
   private platforms: Platform[] = [];
   private crumbleStage = new Map<number, 0 | 1 | 2>(); // every crumble cell
   private crumbleVacatedAt = new Map<number, number>(); // cracked → empty since t
-  private phase: GamePhase = 'countdown';
+  private phase: GamePhase = 'intro';
   private countdown = COUNTDOWN;
+  private introLeft = INTRO_FALLBACK;
   private t = 0;
   private gaze: MedusaGazeState = 'green';
   private gazeUntil = 0; // t at which the current gaze state ends
@@ -632,7 +636,22 @@ export class Medusa implements GameModule {
     return me;
   }
 
+  // The stage finished narrating the intro (plus its beat of silence):
+  // start the countdown. Ignored outside the intro phase.
+  introDone() {
+    if (this.phase === 'intro') {
+      this.phase = 'countdown';
+      this.introLeft = 0;
+    }
+  }
+
   private tick(dt: number) {
+    if (this.phase === 'intro') {
+      this.introLeft -= dt;
+      if (this.introLeft <= 0) this.introDone();
+      this.emitSnapshot();
+      return;
+    }
     if (this.phase === 'countdown') {
       this.countdown -= dt;
       if (this.countdown <= 0) {

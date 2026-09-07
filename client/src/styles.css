@@ -403,44 +403,56 @@ input {
   inset: 0;
 }
 
-.eyecam-consent {
+/* The join gate: camera access is required to enter the room. */
+.cam-gate {
   position: fixed;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: min(320px, 86vw);
-  background: rgba(14, 17, 33, 0.96);
-  border: 1px solid #2a3155;
-  border-radius: 16px;
-  padding: 20px;
-  z-index: 60;
+  inset: 0;
+  background: #0f1220;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
+  padding: 28px;
   text-align: center;
+  z-index: 60;
 }
 
-.eyecam-consent p {
+.cam-gate h2 {
+  font-size: 24px;
+}
+
+.cam-gate p {
   color: #b9c0e0;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.45;
+  max-width: 340px;
 }
 
-.eyecam-consent button {
-  padding: 13px;
-  border-radius: 10px;
+.cam-gate-btn {
+  margin-top: 8px;
+  padding: 15px 26px;
+  border-radius: 12px;
   border: none;
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 17px;
+  font-weight: 800;
   color: white;
-}
-
-.eyecam-consent .yes {
   background: #7c5cff;
 }
 
-.eyecam-consent .no {
-  background: #2a3155;
+.cam-gate-btn:disabled {
+  opacity: 0.6;
+}
+
+.cam-gate-fail {
+  max-width: 340px;
+  background: rgba(150, 19, 28, 0.35);
+  border: 1px solid #96131c;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #ffd9dc;
+  line-height: 1.4;
 }
 
 .eyecam {
@@ -608,22 +620,6 @@ input {
   margin: 0;
   max-width: 340px;
   opacity: 0.9;
-}
-
-.playground-meter {
-  width: min(78vw, 340px);
-  height: 22px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  overflow: hidden;
-}
-
-.playground-meter-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #ffe066, #ff9b54, #ff3b4d);
-  transition: width 0.12s linear;
 }
 
 .playground-hint {

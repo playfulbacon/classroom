@@ -57,7 +57,11 @@ export function Stage() {
       medusaLoadingRef.current = true;
       try {
         const mod = await import('../render/medusa3d');
-        const renderer = mod.createMedusaRenderer(() => roomRef.current);
+        const renderer = mod.createMedusaRenderer(() => roomRef.current, {
+          // The stage owns the speakers: when the narrated intro (plus its
+          // beat of silence) finishes, tell the server to start the countdown.
+          onIntroDone: () => socket.emit('host:intro-done'),
+        });
         if (medusaBoxRef.current) renderer.mount(medusaBoxRef.current);
         medusaRef.current = renderer;
         const pending = snapRef.current;

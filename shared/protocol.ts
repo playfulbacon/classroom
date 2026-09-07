@@ -39,7 +39,10 @@ export interface RoomState {
 // Last One Standing
 // ---------------------------------------------------------------------------
 
-export type GamePhase = 'countdown' | 'play' | 'over';
+// 'intro' precedes the countdown where a game wants a narrated setup (only
+// Medusa uses it: the stage shows/speaks the rules over the visible field,
+// then signals 'host:intro-done' to begin the countdown).
+export type GamePhase = 'intro' | 'countdown' | 'play' | 'over';
 
 export interface LosObstacle {
   x: number;
