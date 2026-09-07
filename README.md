@@ -39,17 +39,18 @@ and a tap rotates your piece.
 ### 🐍 Medusa
 Red light, green light — with Crossy Road controls, rendered in real 3D on
 the big screen. Tap to hop toward Medusa at the far end of an
-obstacle-riddled field; swipe to dodge (or hop back). For anyone who can
-see, **nothing on the field is deadly** — obstacles block, they don't
-swallow (in eye mode, running blind changes that — see below):
+obstacle-riddled field; swipe to dodge (or hop back). **Pits are always
+deadly** — hop into one and it swallows you (🕳 fallen, out of the
+round), whatever the light and whatever your eyes are doing; only the
+field edge just bounces:
 
-- **Pits** block your hop; you just bounce off them.
+- **Pits** — open holes; a hop in is the end of your round.
 - **Chasms** span the whole field and are crossed on **ferry platforms**
-  that shuttle between the banks — hop aboard when one docks, ride it
-  across (petrified passengers keep ferrying forever), hop off on the far
-  side.
-- **Crumbling ground** cracks underfoot and collapses into a blocking pit
-  shortly after you leave it — rough on whoever was following you.
+  that shuttle between the banks — board only when one is actually
+  docked (hop early and it's open water), ride it across (petrified
+  passengers keep ferrying forever), hop off on the far side.
+- **Crumbling ground** cracks underfoot and collapses into a pit
+  shortly after you leave it — a fresh hole for whoever was following.
 
 In classic mode (no cameras), any hop while she watches turns you to
 stone where you stand — a grace window forgives taps already in flight on
@@ -66,12 +67,9 @@ README there).
 the real Medusa rules — it's about whether your **eyes are open**, never
 whether you move. When she turns, the projector **cuts to her face,
 fullscreen**, and there is exactly one safe state, verified by the front
-camera: **close your eyes** and keep running blind — memorize the route,
-because **blind hops fall into pits**: while her gaze is up, a hop made
-with closed eyes into an open pit, chasm water, or collapsed ground
-swallows you (🕳 fallen, out of the round). Ferry crossings are the
-exception — a mistimed blind boarding just bumps the ferry works and
-bounces. Getting caught with your eyes open is nearly fatal: it fills
+camera: **close your eyes** and keep running blind — and since pits are
+always deadly, every blind hop is a bet on your memory of the route.
+Getting caught with your eyes open is nearly fatal: it fills
 your per-player **gaze meter** in ~0.5s; hiding from the camera fills it
 slowly (~2.5s) — never an advantage, just a slower death. Your phone
 buzzes hard when she starts to turn (**shut your eyes**) and buzzes again

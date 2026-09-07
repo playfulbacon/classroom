@@ -499,12 +499,15 @@ async function main() {
   // pit cells off ferry routes as walls.
   const blockedCell = (c: number, l: number) =>
     (isPit(c, l) && !onFerryRoute(c, l)) || crumbleSet.has(l * 1000 + c);
+  // Tighter than the server's ALIGN_EPS (0.35): the snapshot pos is rounded
+  // and up to a tick stale, and a boarding hop judged aligned here must
+  // still be aligned server-side — open water drowns now.
   const ferryAligned = (s: MedusaSnapshot, c: number, l: number) =>
     s.platforms.some(
-      ([, lane, c0, c1, pos]) => lane === l && c >= c0 && c <= c1 && Math.abs(pos - c) <= 0.35,
+      ([, lane, c0, c1, pos]) => lane === l && c >= c0 && c <= c1 && Math.abs(pos - c) <= 0.15,
     );
   const noCamera = bots[0].slot; // never reports — the slow death must find them
-  const pitBumper = bots[1].slot; // deliberately hops at pits — must just bounce
+  const pitBumper = bots[1].slot; // deliberately hops into a pit — must fall in and die
   const closedRunner = bots[2].slot; // streams eyes-closed, never stops hopping
   const openStarer = bots[3].slot; // streams eyes-open, stands still → tiers → stone
   let bumpAttempts = 0;
@@ -571,10 +574,14 @@ async function main() {
       const p = pos.get(bot.slot);
       if (!p || p[3] !== 0) continue;
       const [, col, lane] = p;
-      // Mid-ferry: step off when the far bank is reachable, else keep riding.
+      // Mid-ferry: step off only onto something that can actually be landed
+      // on — solid bank, or (rarely) another docked ferry. Hopping forward
+      // mid-crossing is open water and open water drowns now.
       const riding = isPit(col, lane);
+      const landable = (c: number, l: number) =>
+        !blockedCell(c, l) && (!isPit(c, l) || ferryAligned(s, c, l));
       const advance = () =>
-        hop(bot, riding ? (blockedCell(col + 1, lane) ? null : 'f') : dodge(col, lane));
+        hop(bot, riding ? (landable(col + 1, lane) ? 'f' : null) : dodge(col, lane));
       if (bot.slot === noCamera) {
         // Never streams gaze; only ever moves on green, and camps mid-field
         // (so it can never outrun the meter to the finish). The slow death
@@ -597,8 +604,8 @@ async function main() {
       }
       if (!green) continue;
       {
-        // Steers at the nearest true pit and hops straight into it, forever.
-        // Pits block now — every attempt must bounce off harmlessly.
+        // Steers at the nearest true pit and hops straight into it. Pits
+        // are always deadly now — the first hop in must swallow the diver.
         let best: [number, number] | null = null;
         let bestD = Infinity;
         for (const [c, l] of med0.pits) {
@@ -675,19 +682,23 @@ async function main() {
   console.log(
     `medusa: hiding from the camera was a slow death (meter peaked ${noCameraMeterSeen})`,
   );
-  await waitFor('the pit bumper to bounce off pits repeatedly', 45000, () =>
-    bumpAttempts >= 5 ? true : null,
-  );
+  await waitFor('the pit diver to fall in and die', 45000, () => {
+    const s = latestSnapshot as MedusaSnapshot | null;
+    if (!s || s.kind !== 'medusa') return null;
+    const p = s.players.find((q) => q[0] === pitBumper);
+    return p && p[3] === 3 ? true : null;
+  });
   {
     const s = latestSnapshot as unknown as MedusaSnapshot;
-    const p = s.players.find((q) => q[0] === pitBumper);
-    if (!p) fail('pit bumper missing from snapshot');
-    else {
-      if (p[3] !== 0 && p[3] !== 1) fail(`pit bumper state ${p[3]} — pits must not eliminate`);
-      if (isPit(p[1], p[2])) fail('pit bumper ended up inside a pit cell');
-    }
+    const p = s.players.find((q) => q[0] === pitBumper)!;
+    if (!isPit(p[1], p[2])) fail('the fallen diver should be IN the pit cell');
   }
-  console.log(`medusa: pits block — ${bumpAttempts} deliberate hops at pits all bounced`);
+  await waitFor("the diver's phone to learn its fate", 5000, () =>
+    bots[1].me?.medusaState === 'fallen' ? true : null,
+  );
+  console.log(
+    `medusa: pits are deadly — the diver fell on attempt ${bumpAttempts} and the phone knows`,
+  );
   const medDone = await waitFor('most runners to finish', 95000, () => {
     const s = latestSnapshot as MedusaSnapshot | null;
     if (!s || s.kind !== 'medusa') return null;
@@ -700,8 +711,8 @@ async function main() {
   if (new Set(medDone.finished).size !== medDone.finished.length) {
     fail('medusa placements contain duplicates');
   }
-  if (medDone.players.some((p) => p[3] > 2)) {
-    fail('a player left running/stone/finished — nothing else exists now');
+  if (medDone.players.some((p) => p[3] > 3)) {
+    fail('a player left running/stone/finished/fallen — nothing else exists now');
   }
   const winner = bots.find((b) => b.slot === medDone.finished[0]);
   if (winner && winner.me?.placement !== 1) {
@@ -709,7 +720,7 @@ async function main() {
     if (winner.me?.placement !== 1) fail('winner phone did not get placement 1');
   }
   console.log(
-    `medusa: ${medDone.finished.length} escaped, statue + pit-bounce confirmed, winner slot ${medDone.finished[0]}`,
+    `medusa: ${medDone.finished.length} escaped, statue + pit-fall confirmed, winner slot ${medDone.finished[0]}`,
   );
   stage.emit('host:lobby');
   await waitFor('lobby after medusa', 5000, () =>

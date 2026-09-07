@@ -203,8 +203,8 @@ export class Medusa implements GameModule {
     return this.platforms.some((p) => p.lane === lane && col >= p.c0 && col <= p.c1);
   }
 
-  // Pits, chasms and collapsed crumble refuse the hop for anyone who can
-  // see. A pit cell is passable only via an aligned ferry.
+  // Solid ground, or a pit cell with an aligned ferry docked on it. A hop
+  // anywhere else doesn't land.
   private passable(col: number, lane: number): boolean {
     if (col < 0 || col >= LENGTH || lane < 0 || lane >= this.lanes) return false;
     const k = this.pitKey(col, lane);
@@ -213,15 +213,12 @@ export class Medusa implements GameModule {
     return true;
   }
 
-  // A cell that swallows a BLIND hop: an open pit/chasm or collapsed
-  // ground. Cells on a ferry ROUTE never swallow anyone — a mistimed blind
-  // boarding bumps the ferry works and bounces (boarding shouldn't be a
-  // frame-perfect death lottery). Field edges just bounce too.
+  // Pits are ALWAYS deadly: an open pit, chasm water (no aligned ferry),
+  // or collapsed ground swallows any hop into it — sighted or blind, red
+  // or green. Only the field edge merely bounces.
   private deadly(col: number, lane: number): boolean {
     if (col < 0 || col >= LENGTH || lane < 0 || lane >= this.lanes) return false;
-    const k = this.pitKey(col, lane);
-    if (this.crumbleStage.get(k) === 2) return true;
-    return this.pits.has(k) && !this.onFerryRoute(col, lane);
+    return !this.passable(col, lane);
   }
 
   private greenDuration(): number {
@@ -302,19 +299,11 @@ export class Medusa implements GameModule {
     else if (payload.d === 'r') lane += 1;
     else return;
     if (col === runner.col && lane === runner.lane) return;
-    // Blocked hops (bounds, pits, chasm water, collapsed ground, a ferry
-    // that isn't there) are refused on the spot for anyone who can see.
-    // But a hop made with provably CLOSED eyes while her gaze is up is a
-    // blind hop — the pit swallows it. That's the price of running blind.
+    // The field edge bounces; everything else that can't be landed on —
+    // pits, chasm water, collapsed ground — swallows the hop whole. Look
+    // where you're going, especially with your eyes closed.
     if (!this.passable(col, lane)) {
-      if (
-        this.ctx.options.medusaEyes &&
-        this.gaze !== 'green' &&
-        runner.eff === GZ_CLOSED &&
-        this.deadly(col, lane)
-      ) {
-        this.fall(runner, col, lane);
-      }
+      if (this.deadly(col, lane)) this.fall(runner, col, lane);
       return;
     }
     runner.col = col;
@@ -351,8 +340,8 @@ export class Medusa implements GameModule {
     this.checkEnd();
   }
 
-  // A blind hop into open air: the runner drops into the pit cell and is
-  // out. No statue — a fallen runner casts no cover for the living.
+  // A hop into open air: the runner drops into the pit cell and is out.
+  // No statue — a fallen runner casts no cover for the living.
   private fall(runner: Runner, col: number, lane: number) {
     runner.col = col;
     runner.lane = lane;
@@ -562,7 +551,7 @@ export class Medusa implements GameModule {
       const d = dirs[Math.floor(Math.random() * dirs.length)];
       const tc = runner.col + (d === 'f' ? 1 : 0);
       const tl = runner.lane + (d === 'l' ? -1 : d === 'r' ? 1 : 0);
-      // Pits swallow blind hops now, so most bots "remember" where the
+      // Pits swallow any hop into them, so most bots "remember" where the
       // edges are even with their eyes shut; the gamblers (high risk)
       // send it anyway — and some of them WILL fall. That's the show.
       if (brain.risk > 0.75 || !this.deadly(tc, tl)) return { t: 'hop', d };
@@ -571,7 +560,13 @@ export class Medusa implements GameModule {
     // BFS to the finish around obstacles — greedy dodging can trap a runner
     // in a pit pocket forever; the generated fields are always solvable.
     const d = this.pathStep(runner.col, runner.lane);
-    return d ? { t: 'hop', d } : null;
+    if (!d) return null;
+    // The path crosses chasms via ferry routes: wait at the bank until the
+    // ferry is actually docked — hopping into open water is fatal now.
+    const tc = runner.col + (d === 'f' ? 1 : d === 'b' ? -1 : 0);
+    const tl = runner.lane + (d === 'l' ? -1 : d === 'r' ? 1 : 0);
+    if (this.pits.has(this.pitKey(tc, tl)) && !this.platformAt(tc, tl)) return null;
+    return { t: 'hop', d };
   }
 
   // First BFS step toward the finish. Blocked cells: pits/chasms off ferry

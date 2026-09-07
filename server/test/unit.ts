@@ -355,10 +355,10 @@ function makeMedusa(playerCount: number, medusaEyes = false) {
 console.log('unit: medusa fields always solvable (chasms, ferries, crumble) OK');
 
 // (b) Gaze fairness: turning safe, early red forgiven, late red petrifies;
-// (c) hop cooldown; (d) pits block instead of killing; (e) timeout petrifies
+// (c) hop cooldown; (d) pits swallow, edges bounce; (e) timeout petrifies
 // stragglers.
 {
-  const { game, internals } = makeMedusa(4);
+  const { game, internals } = makeMedusa(5);
   const clearCell = (col: number, lane: number) => {
     internals.pits.delete(lane * 24 + col);
     internals.crumbleStage.delete(lane * 24 + col);
@@ -395,7 +395,8 @@ console.log('unit: medusa fields always solvable (chasms, ferries, crumble) OK')
   assert.equal(runner.state, 1, 'hop 500ms into red petrifies');
   assert.equal(runner.col, 7, 'petrified where they stood — the hop never lands');
 
-  // pits BLOCK — nobody falls anywhere, the hop is just refused
+  // pits are ALWAYS deadly — any hop into one swallows the runner, classic
+  // mode and green light included
   const r2 = internals.runners.get(2);
   r2.col = 5;
   r2.lane = 2;
@@ -403,8 +404,16 @@ console.log('unit: medusa fields always solvable (chasms, ferries, crumble) OK')
   internals.t = 13;
   internals.gaze = 'green';
   game.input(2, { t: 'hop', d: 'f' });
-  assert.equal(r2.col, 5, 'hop into a pit is refused — position unchanged');
-  assert.equal(r2.state, 0, 'nothing on the field is deadly');
+  assert.equal(r2.state, 3, 'hop into a pit → fallen');
+  assert.equal(r2.col, 6, 'they fell INTO the pit cell');
+  // ...but the field edge just bounces.
+  const rEdge = internals.runners.get(5);
+  rEdge.col = 5;
+  rEdge.lane = 0;
+  internals.t = 13.5;
+  game.input(5, { t: 'hop', d: 'l' });
+  assert.equal(rEdge.lane, 0, 'the field edge refuses the hop');
+  assert.equal(rEdge.state, 0, 'edges are never deadly');
 
   // finishing
   const r3 = internals.runners.get(3);
@@ -424,12 +433,12 @@ console.log('unit: medusa fields always solvable (chasms, ferries, crumble) OK')
   assert.equal(r4.state, 1, 'timeout petrifies stragglers');
   assert.equal(internals.phase, 'over');
 }
-console.log('unit: medusa gaze/cooldown/pit-block/timeout OK');
+console.log('unit: medusa gaze/cooldown/pit-fall/timeout OK');
 
-// Ferry platforms: board only when aligned, ride across, step off; open
-// water refuses the hop.
+// Ferry platforms: board only when aligned, ride across, step off; a hop
+// into open water (ferry mid-gorge) is a drowning.
 {
-  const { game, internals } = makeMedusa(2);
+  const { game, internals } = makeMedusa(3);
   const key = (c: number, l: number) => l * 24 + c;
   // Hand-built gorge at cols 8-10 on every lane, one ferry on lane 3.
   internals.gaze = 'green';
@@ -442,14 +451,18 @@ console.log('unit: medusa gaze/cooldown/pit-block/timeout OK');
   internals.pits.delete(key(7, 3));
   internals.pits.delete(key(11, 3));
 
+  // Ferry mid-gorge: the impatient hop goes into the water.
+  const r2 = internals.runners.get(2);
+  r2.col = 7;
+  r2.lane = 3;
+  internals.t = 10;
+  game.input(2, { t: 'hop', d: 'f' });
+  assert.equal(r2.state, 3, 'hopping at an unaligned ferry → fallen');
+  assert.equal(r2.col, 8, 'into the chasm cell');
+
   const r = internals.runners.get(1);
   r.col = 7;
   r.lane = 3;
-  internals.t = 10;
-  game.input(1, { t: 'hop', d: 'f' });
-  assert.equal(r.col, 7, 'ferry mid-gorge: boarding hop refused');
-  assert.equal(r.ride, null);
-
   internals.platforms[0].pos = 8.2; // docked within ALIGN_EPS of col 8
   internals.t = 11;
   game.input(1, { t: 'hop', d: 'f' });
@@ -473,7 +486,7 @@ console.log('unit: medusa gaze/cooldown/pit-block/timeout OK');
 console.log('unit: medusa ferry platforms OK');
 
 // Crumbling ground: cracks underfoot, collapses only after it's vacated,
-// then blocks like any pit.
+// then swallows like any pit.
 {
   const { game, internals } = makeMedusa(2);
   const k = 5 * 24 + 10; // cell (10, 5)
@@ -505,10 +518,11 @@ console.log('unit: medusa ferry platforms OK');
   for (let i = 0; i < 20; i++) internals.tick(1 / 20); // 1s > 0.6s delay
   assert.equal(internals.crumbleStage.get(k), 2, 'collapses after being vacated');
 
-  // Collapsed ground now blocks.
+  // Collapsed ground is a pit now — hopping back in is fatal.
   internals.t += 1;
   game.input(1, { t: 'hop', d: 'b' });
-  assert.equal(r.col, 11, 'hop onto collapsed ground refused');
+  assert.equal(r.state, 3, 'hop onto collapsed ground → fallen');
+  assert.equal(r.col, 10, 'into the fresh hole');
 }
 console.log('unit: medusa crumbling ground OK');
 
@@ -658,32 +672,19 @@ console.log('unit: medusa crumbling ground OK');
     assert.equal(r.state, 0, 'the hop itself never petrifies');
   }
 
-  // (j) Blind hops are deadly: with provably CLOSED eyes while her gaze is
-  // up, a pit swallows the hop — the runner falls in and is out.
+  // (j) Pits don't care about your eyes: a hop into one swallows the
+  // runner whether their eyes are closed (blind), open (caught peeking),
+  // or her gaze is down entirely.
   {
     const { game, internals } = makeMedusa(2, true);
     const r = place(internals, 1);
     holdRed(internals, 10);
     internals.platforms.length = 0; // no ferry can save this pit
     internals.pits.add(r.lane * 24 + 6);
-    run(game, internals, 1, 1, 0.9, 2); // eyes closed, eff settles
+    run(game, internals, 1, 1, 0.9, 2); // eyes closed — running blind
     game.input(1, { t: 'hop', d: 'f' });
     assert.equal(r.state, 3, 'blind hop into a pit → fallen');
     assert.equal(r.col, 6, 'they fell INTO the pit cell');
-  }
-
-  // (k) The same pit only bounces anyone who can see: eyes open during red,
-  // or eyes closed while her gaze is down (green).
-  {
-    const { game, internals } = makeMedusa(2, true);
-    const r = place(internals, 1);
-    holdRed(internals, 10);
-    internals.platforms.length = 0;
-    internals.pits.add(r.lane * 24 + 6);
-    run(game, internals, 1, 2, 0.9, 2); // eyes OPEN — sighted
-    game.input(1, { t: 'hop', d: 'f' });
-    assert.equal(r.col, 5, 'a sighted hop at a pit still bounces');
-    assert.equal(r.state, 0);
   }
   {
     const { game, internals } = makeMedusa(2, true);
@@ -693,10 +694,10 @@ console.log('unit: medusa crumbling ground OK');
     internals.gazeUntil = 1000;
     internals.platforms.length = 0;
     internals.pits.add(r.lane * 24 + 6);
-    run(game, internals, 1, 1, 0.9, 2); // eyes closed but she's not looking
+    run(game, internals, 1, 2, 0.9, 2); // eyes open, green light — sighted
     game.input(1, { t: 'hop', d: 'f' });
-    assert.equal(r.col, 5, 'closed eyes on green — the pit still bounces');
-    assert.equal(r.state, 0);
+    assert.equal(r.state, 3, 'sighted hop into a pit is just as fatal');
+    assert.equal(r.col, 6);
   }
 
   // (i) Stone slows: tiers stretch the hop cooldown.

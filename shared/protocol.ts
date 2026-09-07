@@ -117,10 +117,11 @@ export interface PuzzleSnapshot {
 
 export type MedusaGazeState = 'green' | 'turning' | 'red' | 'returning';
 
-// Player states in the snapshot tuple. Pits, chasms and collapsed ground
-// BLOCK movement for anyone who can see — but a hop made with provably
-// CLOSED eyes while Medusa's gaze is up goes in blind: the pit swallows you
-// (MEDUSA_FALLEN). That's the gamble of running blind at full speed.
+// Player states in the snapshot tuple. Pits are ALWAYS deadly: any hop
+// into an open pit, chasm water (no aligned ferry), or collapsed ground
+// swallows the runner (MEDUSA_FALLEN) — sighted or blind, red or green,
+// classic or eye mode. Only the field edge merely bounces. Running blind
+// at full speed is the gamble; the ground doesn't care about your eyes.
 export const MEDUSA_RUNNING = 0;
 export const MEDUSA_STONE = 1;
 export const MEDUSA_FINISHED = 2;

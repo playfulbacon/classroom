@@ -804,8 +804,8 @@ export function Play() {
           <div className="big-num">{num}</div>
           <h2>🕳 You fell!</h2>
           <div className="sub">
-            A blind hop into open air — the pit swallowed you. Running with
-            your eyes closed is fast, but the ground doesn’t care.
+            A hop into open air — the pit swallowed you. The ground doesn’t
+            forgive, especially when your eyes are closed.
           </div>
         </div>
       );
@@ -853,8 +853,8 @@ export function Play() {
           <div className="big-num" style={{ opacity: 0.25 }}>{num}</div>
           <div className="hint">
             {me.eyeMode
-              ? 'TAP to run · CLOSE YOUR EYES when she turns — run blind, but pits swallow blind hops!'
-              : 'TAP to run · swipe to dodge pits · watch the big screen — FREEZE when she turns!'}
+              ? 'TAP to run · pits are DEADLY · CLOSE YOUR EYES when she turns and run blind!'
+              : 'TAP to run · pits are DEADLY · watch the big screen — FREEZE when she turns!'}
           </div>
           <div className="hint" style={{ opacity: 0.7 }}>
             Press &amp; hold to make your runner wave 👋
