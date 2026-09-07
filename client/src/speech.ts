@@ -9,9 +9,9 @@ export function speak(
 ): Promise<void> {
   return new Promise((resolve) => {
     const words = text.trim().split(/\s+/).length;
-    // Generous cap: normal speech runs ~150-180 wpm; if 'end' never fires
-    // (no voices installed), this doubles as silent reading time.
-    const capMs = words * 380 + 2600;
+    // If speech never starts (no voices installed), resolve after silent
+    // reading time instead.
+    const readingMs = words * 380 + 2600;
     let done = false;
     let cap: ReturnType<typeof setTimeout> | null = null;
     const finish = () => {
@@ -20,19 +20,26 @@ export function speak(
       if (cap) clearTimeout(cap);
       resolve();
     };
-    cap = setTimeout(finish, capMs);
+    cap = setTimeout(finish, readingMs);
     try {
       const synth = window.speechSynthesis;
-      if (!synth) return; // the cap timer resolves after reading time
+      if (!synth) return; // the reading-time timer resolves
       if (interrupt) synth.cancel();
       const utter = new SpeechSynthesisUtterance(text);
       utter.lang = 'en-US';
       utter.rate = rate;
+      utter.onstart = () => {
+        // Real speech is underway (voices can load late and speak slower
+        // than the estimate) — never cut it off: from here only 'end' or
+        // 'error' resolves, with a long stuck-synth safety net.
+        if (cap) clearTimeout(cap);
+        cap = setTimeout(finish, readingMs * 3 + 10000);
+      };
       utter.onend = finish;
       utter.onerror = finish;
       synth.speak(utter);
     } catch {
-      // the cap timer resolves
+      // the reading-time timer resolves
     }
   });
 }

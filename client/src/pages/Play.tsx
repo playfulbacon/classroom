@@ -209,81 +209,92 @@ const GAZE_WORDS: Record<number, string> = { 1: 'closed', 2: 'OPEN', 3: 'unknown
 // the playground, and the in-round feedback overlay.
 const localGaze = { s: 3 as 1 | 2 | 3, at: 0 };
 
-// Shared front-camera lifecycle: on-device eyes-open detection. Camera
-// permission was already granted at the join gate, so tracking starts
-// immediately. Detection runs entirely on the phone; only a {state,
-// confidence} pair is ever sent (when emitToServer). Unmounting stops it.
-function useEyeTracking(emitToServer: boolean) {
-  const [status, setStatus] = useState<GazeCamStatus>('starting');
-  const [gaze, setGaze] = useState<GazeState>({ s: 3, c: 1 });
-  const [failDetail, setFailDetail] = useState('');
-  const previewRef = useRef<HTMLDivElement>(null);
-  const trackerRef = useRef<GazeTracker | null>(null);
-  const lastRef = useRef<GazeState | null>(null);
+// ONE tracker for the whole session, started the moment the join gate
+// grants the camera and never torn down between screens — the round begins
+// with a warm camera and a loaded model instead of a multi-second restart.
+// Detection runs entirely on the phone; only a {state, confidence} pair is
+// ever sent (when a component with emitToServer is mounted).
+const sharedCam: {
+  status: GazeCamStatus;
+  failDetail: string;
+  tracker: GazeTracker | null;
+  last: GazeState | null;
+} = { status: 'starting', failDetail: '', tracker: null, last: null };
+const camWatchers = new Set<() => void>();
+let trackerPromise: Promise<void> | null = null;
 
-  useEffect(() => {
-    if (status !== 'starting') return;
-    let cancelled = false;
-    void (async () => {
+function ensureTracker(): Promise<void> {
+  if (!trackerPromise) {
+    sharedCam.status = 'starting';
+    trackerPromise = (async () => {
       const mod = await import('../gaze');
       const result = await mod.startGazeTracking((g) => {
-        lastRef.current = g;
+        sharedCam.last = g;
+        localGaze.s = g.s;
+        localGaze.at = performance.now();
+      });
+      if ('error' in result) {
+        sharedCam.status = 'failed';
+        sharedCam.failDetail = result.detail;
+        dbg['cam'] = `FAILED — ${result.detail}`;
+        trackerPromise = null; // a retry may succeed (e.g. permission granted)
+        for (const w of camWatchers) w();
+        throw new Error(result.detail);
+      }
+      sharedCam.tracker = result;
+      sharedCam.status = 'on';
+      result.video.className = 'eyecam-video';
+      dbg['cam'] = 'running';
+      for (const w of camWatchers) w();
+    })();
+    trackerPromise.catch(() => {
+      // callers that care (the gate) handle it; others just see 'failed'
+    });
+  }
+  return trackerPromise;
+}
+
+function useEyeTracking(emitToServer: boolean) {
+  const [, force] = useState(0);
+  const [gaze, setGaze] = useState<GazeState>({ s: 3, c: 1 });
+  const previewRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    void ensureTracker().catch(() => {});
+    const w = () => force((t) => t + 1);
+    camWatchers.add(w);
+    return () => {
+      camWatchers.delete(w);
+    };
+  }, []);
+
+  // Adopt the shared <video> into whichever preview box is mounted now.
+  useEffect(() => {
+    const v = sharedCam.tracker?.video;
+    const box = previewRef.current;
+    if (v && box && v.parentElement !== box) box.appendChild(v);
+  });
+
+  // Heartbeat so the server can tell fresh reports from a dead camera —
+  // and the moment to mirror the tracker's live internals into the 🐞 panel.
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const g = sharedCam.last;
+      if (g) {
         localGaze.s = g.s;
         localGaze.at = performance.now();
         setGaze(g);
         if (emitToServer) {
           socket.emit('input', { t: 'gaze', s: g.s, c: Math.round(g.c * 100) / 100 });
         }
-      });
-      if (cancelled) {
-        if (!('error' in result)) result.stop();
-        return;
-      }
-      if ('error' in result) {
-        setFailDetail(result.detail);
-        dbg['cam'] = `FAILED — ${result.detail}`;
-        setStatus('failed');
-        return;
-      }
-      dbg['cam'] = 'running';
-      trackerRef.current = result;
-      result.video.className = 'eyecam-video';
-      previewRef.current?.appendChild(result.video);
-      setStatus('on');
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [status, emitToServer]);
-
-  // Heartbeat so the server can tell fresh reports from a dead camera —
-  // and the moment to mirror the tracker's live internals into the 🐞 panel.
-  useEffect(() => {
-    if (status !== 'on') return;
-    const iv = setInterval(() => {
-      const g = lastRef.current;
-      if (g) {
-        localGaze.s = g.s;
-        localGaze.at = performance.now();
-        if (emitToServer) {
-          socket.emit('input', { t: 'gaze', s: g.s, c: Math.round(g.c * 100) / 100 });
-        }
         dbg['sent'] = `${GAZE_WORDS[g.s]} c=${g.c.toFixed(2)}`;
       }
-      if (trackerRef.current) Object.assign(dbg, trackerRef.current.debug);
+      if (sharedCam.tracker) Object.assign(dbg, sharedCam.tracker.debug);
     }, 250);
     return () => clearInterval(iv);
-  }, [status, emitToServer]);
+  }, [emitToServer]);
 
-  useEffect(
-    () => () => {
-      trackerRef.current?.stop();
-      trackerRef.current = null;
-    },
-    [],
-  );
-
-  return { status, gaze, failDetail, previewRef };
+  return { status: sharedCam.status, gaze, failDetail: sharedCam.failDetail, previewRef };
 }
 
 // The join gate: camera access is part of joining on mobile. Nobody enters
@@ -297,22 +308,13 @@ function CameraGate({ onReady }: { onReady: () => void }) {
   const request = async () => {
     setState('asking');
     try {
-      const md = navigator.mediaDevices;
-      if (!md?.getUserMedia) {
-        throw new Error(
-          window.isSecureContext
-            ? 'no mediaDevices API in this browser'
-            : 'cameras need HTTPS (or localhost) — this page is plain http',
-        );
-      }
-      const stream = await md.getUserMedia({
-        video: { facingMode: 'user', width: 320, height: 240 },
-      });
-      // Permission is what we needed; the gaze tracker opens its own stream.
-      for (const t of stream.getTracks()) t.stop();
+      // Start the REAL tracker here (camera + landmark model), not a
+      // throwaway permission probe: by the time the lobby shows, the eye
+      // sensor is already warm and stays on for the whole session.
+      await ensureTracker();
       onReady();
     } catch (e) {
-      setDetail(e instanceof Error ? (e.name === 'Error' ? e.message : e.name) : String(e));
+      setDetail(sharedCam.failDetail || (e instanceof Error ? e.message : String(e)));
       setState('failed');
     }
   };

@@ -919,41 +919,60 @@ export function createMedusaRenderer(
         h * 0.8,
       );
     } else if (s.phase === 'over') {
-      ctx.fillStyle = 'rgba(10,12,24,0.85)';
-      const pw = w * 0.46;
-      const ph = h * 0.56;
+      // Between-rounds leaderboard: series points, next round on a timer.
+      ctx.fillStyle = 'rgba(10,12,24,0.88)';
+      const pw = w * 0.5;
+      const ph = h * 0.72;
       ctx.beginPath();
       ctx.roundRect((w - pw) / 2, (h - ph) / 2, pw, ph, 22);
       ctx.fill();
       ctx.fillStyle = 'white';
-      ctx.font = `800 ${Math.round(h * 0.055)}px system-ui`;
-      ctx.fillText('MEDUSA', w / 2, h / 2 - ph * 0.4);
+      ctx.font = `800 ${Math.round(h * 0.05)}px system-ui`;
+      ctx.fillText(`🏆 ROUND ${s.round} — LEADERBOARD`, w / 2, h / 2 - ph * 0.42);
       const names = new Map<number, string>();
       if (room) for (const p of room.players) names.set(p.id, p.name);
       const medals = ['🥇', '🥈', '🥉'];
-      const top = s.finished.slice(0, 5);
-      if (top.length === 0) {
+      const finRank = new Map(s.finished.map((slot, i) => [slot, i]));
+      const rows = (s.scores ?? []).slice(0, 8);
+      if (rows.length === 0) {
         ctx.font = `700 ${Math.round(h * 0.04)}px system-ui`;
         ctx.fillText('Nobody made it… the garden grows. 🗿', w / 2, h / 2 - ph * 0.1);
       }
-      top.forEach((slot, i) => {
-        ctx.font = `700 ${Math.round(h * 0.042)}px system-ui`;
+      rows.forEach(([slot, pts], i) => {
+        const y = h / 2 - ph * 0.3 + i * h * 0.062;
+        const fr = finRank.get(slot);
+        const earned =
+          fr !== undefined ? Math.max(0, 10 - 2 * fr) : 0;
+        ctx.font = `700 ${Math.round(h * 0.038)}px system-ui`;
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'left';
         ctx.fillText(
           `${medals[i] ?? `${i + 1}.`} #${String(slot).padStart(2, '0')} ${names.get(slot) ?? ''}`,
-          w / 2,
-          h / 2 - ph * 0.22 + i * h * 0.07,
+          (w - pw) / 2 + pw * 0.08,
+          y,
+        );
+        ctx.textAlign = 'right';
+        ctx.fillStyle = earned > 0 ? '#ffd166' : '#b9c0e0';
+        ctx.fillText(
+          `${pts} pts${earned > 0 ? `  (+${earned})` : ''}`,
+          (w + pw) / 2 - pw * 0.08,
+          y,
         );
       });
+      ctx.textAlign = 'center';
       const stones2 = s.players.filter((p) => p[3] === ST_STONE).length;
       const fallen2 = s.players.filter((p) => p[3] === ST_FALLEN).length;
-      ctx.font = `700 ${Math.round(h * 0.032)}px system-ui`;
+      ctx.font = `700 ${Math.round(h * 0.03)}px system-ui`;
       ctx.fillStyle = '#b9c0e0';
       ctx.fillText(
         `${s.finished.length} escaped · ${stones2} statues` +
           (fallen2 > 0 ? ` · ${fallen2} fell` : ''),
         w / 2,
-        h / 2 + ph * 0.4,
+        h / 2 + ph * 0.34,
       );
+      ctx.font = `800 ${Math.round(h * 0.034)}px system-ui`;
+      ctx.fillStyle = 'white';
+      ctx.fillText(`Next round in ${Math.max(1, s.countdown)}…`, w / 2, h / 2 + ph * 0.42);
     }
   }
 

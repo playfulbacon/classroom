@@ -787,6 +787,9 @@ async function main() {
   console.log(
     `bots: medusa round complete — ${botMedusa.finished.length} escaped, ${botStones} statues`,
   );
+  // Medusa is a self-restarting series now — stop it so the room doesn't
+  // keep simulating rounds in the background for the rest of the run.
+  stage2.emit('host:lobby');
 
   // ==========================================================================
   // Idle-human regression: bots must not freeze against a player who never
