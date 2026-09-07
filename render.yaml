@@ -1,0 +1,12 @@
+# One-click deploy blueprint for Render (https://render.com).
+# New + → Blueprint → pick this repo → deploy. You get a permanent
+# https://<name>.onrender.com URL — which is what phone cameras require —
+# and every push to main redeploys automatically.
+services:
+  - type: web
+    name: classroom-arcade
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /

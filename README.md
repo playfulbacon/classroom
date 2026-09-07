@@ -130,7 +130,26 @@ phone accepts the certificate warning once. (`localhost` on the laptop itself
 always works with plain `npm run dev`.) In production, deploy behind any
 HTTPS host and none of this applies.
 
-## Production
+## Production (the simple way to make cameras "just work")
+
+Phone cameras require an https page, so the intended setup is: host the game
+once, get one permanent https URL, and never touch tunnels or certificates
+again. This repo ships a Render blueprint:
+
+1. Push the repo to GitHub, go to [render.com](https://render.com) → **New +
+   → Blueprint** → pick this repo → Apply.
+2. You get `https://classroom-arcade-<something>.onrender.com`. Bookmark
+   `/stage` on the classroom machine — that's the whole workflow from then on:
+   open stage, students scan, cameras prompt normally.
+3. Every push to `main` redeploys automatically (~2 min), so iterating with
+   real phones is just: push, wait for deploy, reload the same bookmark. The
+   🐞 panel's build hash shows when the new version is live.
+
+(Free tier note: the instance sleeps when idle — the first visit of the day
+takes ~30s to wake.)
+
+Any other host with long-lived WebSocket processes works the same way
+(Railway, Fly.io, a VPS behind Caddy):
 
 ```bash
 npm install
@@ -138,10 +157,9 @@ npm run build      # builds the client into client/dist
 npm start          # single server serves the app + websockets on $PORT
 ```
 
-Deploy to any host that supports long-lived WebSocket processes (Render,
-Railway, Fly.io, a VPS). Avoid serverless platforms. One small instance
-comfortably handles a full class: the server streams game state to the *stage
-only*; phones exchange a few tiny messages per second.
+Avoid serverless platforms. One small instance comfortably handles a full
+class: the server streams game state to the *stage only*; phones exchange a
+few tiny messages per second.
 
 ## Tests
 
