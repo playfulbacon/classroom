@@ -78,10 +78,14 @@ function generateOnce(length: number, lanes: number, startCols: number): MedusaF
     }
   }
   const inBand = (col: number) => chasms.some((b) => col >= b.c0 && col <= b.c1);
+  // The columns flanking a chasm stay completely clear: stepping off a ferry
+  // (either direction) must never land you against a pit.
+  const besideBand = (col: number) =>
+    chasms.some((b) => col === b.c0 - 1 || col === b.c1 + 1);
 
   // Scattered pits (blocking rocks) outside safe paths and bands.
   for (let col = startCols + 1; col <= length - 3; col++) {
-    if (inBand(col)) continue;
+    if (inBand(col) || besideBand(col)) continue;
     let inCol = 0;
     const cap = Math.floor(lanes * 0.35);
     for (let lane = 0; lane < lanes; lane++) {

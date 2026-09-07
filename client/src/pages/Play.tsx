@@ -3,15 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import type {
   BuzzType,
   JoinResponse,
-  MedusaFieldMsg,
-  MedusaShieldMsg,
+  MedusaPulseMsg,
   MeState,
   RoomState,
 } from '../../../shared/protocol';
 import { drawFragment, getRoomImage, groupArtCanvas } from '../art';
 import { dbg } from '../debug';
 import type { GazeState, GazeTracker } from '../gaze';
-import type { ShieldRenderer3D } from '../render/shield3d';
 import { loadCreds, saveCreds, socket } from '../socket';
 
 const JOY_RADIUS = 90; // px of drag for full deflection
@@ -202,15 +200,19 @@ function PiecePreview({ group, quadrant, gw, gh, imageId }: PiecePreviewProps) {
   return <canvas ref={ref} width={170} height={170} className="piece-preview" />;
 }
 
-type GazeCamStatus = 'ask' | 'starting' | 'calibrating' | 'on' | 'off' | 'failed';
+type GazeCamStatus = 'ask' | 'starting' | 'on' | 'off' | 'failed';
 
-const GAZE_ICONS = ['🛡', '😑', '👁', '❔'] as const; // shield/closed/caught/unknown
+const GAZE_ICONS: Record<number, string> = { 1: '😑', 2: '👁', 3: '❔' };
+const GAZE_WORDS: Record<number, string> = { 1: 'closed', 2: 'OPEN', 3: 'unknown' };
 
-// Medusa eye mode: consent card → on-device gaze tracking → quick "look at
-// your phone" calibration → tiny mirrored self-preview with a live state
-// icon. Detection runs entirely on the phone; only a {state, confidence}
-// pair is sent. Unmounting stops the camera.
-function MedusaGazeCam() {
+// The freshest committed local eye state — shared between the camera widget,
+// the playground, and the in-round feedback overlay.
+const localGaze = { s: 3 as 1 | 2 | 3, at: 0 };
+
+// Shared front-camera lifecycle: consent → on-device eyes-open detection.
+// Detection runs entirely on the phone; only a {state, confidence} pair is
+// ever sent (when emitToServer). Unmounting stops the camera.
+function useEyeTracking(emitToServer: boolean) {
   const [status, setStatus] = useState<GazeCamStatus>(() => {
     try {
       const remembered = sessionStorage.getItem('ca-eyecam');
@@ -227,23 +229,19 @@ function MedusaGazeCam() {
   const trackerRef = useRef<GazeTracker | null>(null);
   const lastRef = useRef<GazeState | null>(null);
 
-  const remember = (v: 'yes' | 'no') => {
-    try {
-      sessionStorage.setItem('ca-eyecam', v);
-    } catch {
-      // fine
-    }
-  };
-
   useEffect(() => {
     if (status !== 'starting') return;
     let cancelled = false;
     void (async () => {
       const mod = await import('../gaze');
-      const result = await mod.startGazeTracking((s) => {
-        lastRef.current = s;
-        setGaze(s);
-        socket.emit('input', { t: 'gaze', s: s.s, c: Math.round(s.c * 100) / 100 });
+      const result = await mod.startGazeTracking((g) => {
+        lastRef.current = g;
+        localGaze.s = g.s;
+        localGaze.at = performance.now();
+        setGaze(g);
+        if (emitToServer) {
+          socket.emit('input', { t: 'gaze', s: g.s, c: Math.round(g.c * 100) / 100 });
+        }
       });
       if (cancelled) {
         if (!('error' in result)) result.stop();
@@ -259,30 +257,31 @@ function MedusaGazeCam() {
       trackerRef.current = result;
       result.video.className = 'eyecam-video';
       previewRef.current?.appendChild(result.video);
-      setStatus('calibrating');
-      await result.calibrate(1500);
-      if (!cancelled) setStatus('on');
+      setStatus('on');
     })();
     return () => {
       cancelled = true;
     };
-  }, [status]);
+  }, [status, emitToServer]);
 
   // Heartbeat so the server can tell fresh reports from a dead camera —
   // and the moment to mirror the tracker's live internals into the 🐞 panel.
   useEffect(() => {
-    if (status !== 'on' && status !== 'calibrating') return;
+    if (status !== 'on') return;
     const iv = setInterval(() => {
-      const s = lastRef.current;
-      if (s) socket.emit('input', { t: 'gaze', s: s.s, c: Math.round(s.c * 100) / 100 });
-      dbg['cam'] = status;
-      if (trackerRef.current) Object.assign(dbg, trackerRef.current.debug);
-      if (s) {
-        dbg['sent'] = `${['shield', 'closed', 'caught', 'unknown'][s.s]} c=${s.c.toFixed(2)}`;
+      const g = lastRef.current;
+      if (g) {
+        localGaze.s = g.s;
+        localGaze.at = performance.now();
+        if (emitToServer) {
+          socket.emit('input', { t: 'gaze', s: g.s, c: Math.round(g.c * 100) / 100 });
+        }
+        dbg['sent'] = `${GAZE_WORDS[g.s]} c=${g.c.toFixed(2)}`;
       }
+      if (trackerRef.current) Object.assign(dbg, trackerRef.current.debug);
     }, 250);
     return () => clearInterval(iv);
-  }, [status]);
+  }, [status, emitToServer]);
 
   useEffect(
     () => () => {
@@ -292,56 +291,203 @@ function MedusaGazeCam() {
     [],
   );
 
-  if (status === 'ask') {
-    return (
-      <div className="eyecam-consent">
-        <h3>👁 Medusa&apos;s rules</h3>
-        <p>
-          When she turns: <b>look at your phone or close your eyes.</b> Your
-          camera checks where you&apos;re looking — video never leaves your
-          phone, only &quot;safe or caught&quot; does.
-        </p>
-        <p style={{ opacity: 0.75 }}>
-          No camera? Her gaze still finds you, slowly — hide behind statues.
-        </p>
-        <button
-          className="yes"
-          onClick={() => {
-            remember('yes');
-            setStatus('starting');
-          }}
-        >
-          Use my camera
-        </button>
-        <button
-          className="no"
-          onClick={() => {
-            remember('no');
-            setStatus('off');
-          }}
-        >
-          No camera
-        </button>
-      </div>
-    );
-  }
-  if (status === 'off' || status === 'failed') {
+  const choose = (v: 'yes' | 'no') => {
+    try {
+      sessionStorage.setItem('ca-eyecam', v);
+    } catch {
+      // fine
+    }
+    setStatus(v === 'yes' ? 'starting' : 'off');
+  };
+  return { status, gaze, failDetail, previewRef, choose };
+}
+
+function ConsentCard({ choose }: { choose: (v: 'yes' | 'no') => void }) {
+  return (
+    <div className="eyecam-consent">
+      <h3>👁 Medusa&apos;s rules</h3>
+      <p>
+        When she turns: <b>close your eyes.</b> Your camera checks they&apos;re
+        really closed — video never leaves your phone, only open/closed does.
+      </p>
+      <p style={{ opacity: 0.75 }}>
+        No camera? Her gaze still finds you, slowly — hide behind statues.
+      </p>
+      <button className="yes" onClick={() => choose('yes')}>
+        Use my camera
+      </button>
+      <button className="no" onClick={() => choose('no')}>
+        No camera
+      </button>
+    </div>
+  );
+}
+
+// The small in-round camera widget: corner self-preview + live state icon.
+function MedusaGazeCam() {
+  const cam = useEyeTracking(true);
+  if (cam.status === 'ask') return <ConsentCard choose={cam.choose} />;
+  if (cam.status === 'off' || cam.status === 'failed') {
     return (
       <div className="eyecam-chip">
-        📷 {status === 'failed' ? 'camera unavailable — ' : ''}she finds you slowly:
-        hide behind statues
-        {status === 'failed' && failDetail && (
-          <div className="eyecam-chip-detail">{failDetail}</div>
+        📷 {cam.status === 'failed' ? 'camera unavailable — ' : ''}she finds you
+        slowly: hide behind statues
+        {cam.status === 'failed' && cam.failDetail && (
+          <div className="eyecam-chip-detail">{cam.failDetail}</div>
         )}
       </div>
     );
   }
   return (
-    <div className="eyecam" ref={previewRef}>
-      <span className="eyecam-state">
-        {status === 'calibrating' ? '🎯' : GAZE_ICONS[gaze.s]}
-      </span>
-      {status === 'calibrating' && <span className="eyecam-cal">look at your phone…</span>}
+    <div className="eyecam" ref={cam.previewRef}>
+      <span className="eyecam-state">{GAZE_ICONS[cam.gaze.s]}</span>
+    </div>
+  );
+}
+
+// Demo meter rates — mirror the server's (FILL_OPEN / FILL_UNKNOWN /
+// DRAIN_SAFE) so the playground teaches the real timing.
+const DEMO_RATES: Record<number, number> = { 1: -1 / 1.5, 2: 1 / 1.0, 3: 1 / 2.5 };
+
+// The sensor playground: lives on the lobby screen whenever eye mode is on,
+// so every player meets the detector in a consequence-free moment — blink at
+// it, close your eyes, watch the demo meter chase you — BEFORE a round ever
+// puts petrification behind it. Trust is built here.
+function EyePlayground() {
+  const cam = useEyeTracking(false);
+  const [meter, setMeter] = useState(0);
+  const [gotcha, setGotcha] = useState(false);
+  useEffect(() => {
+    if (cam.status !== 'on') return;
+    const iv = setInterval(() => {
+      setMeter((m) => {
+        const next = m + (DEMO_RATES[localGaze.s] ?? 0) * 0.1;
+        if (next >= 1) {
+          setGotcha(true);
+          setTimeout(() => setGotcha(false), 1200);
+          return 0;
+        }
+        return Math.max(0, next);
+      });
+    }, 100);
+    return () => clearInterval(iv);
+  }, [cam.status]);
+
+  if (cam.status === 'ask') return <ConsentCard choose={cam.choose} />;
+  if (cam.status === 'off' || cam.status === 'failed') {
+    return (
+      <div className="playground playground-unknown">
+        <div className="playground-emoji">📷</div>
+        <h2>No camera</h2>
+        <p>
+          {cam.failDetail || 'You declined the camera.'}
+          <br />
+          During red light her gaze will find you slowly — hide behind statues.
+        </p>
+      </div>
+    );
+  }
+  const st = cam.status === 'on' ? cam.gaze.s : 3;
+  const cls = st === 1 ? 'playground-safe' : st === 2 ? 'playground-seen' : 'playground-unknown';
+  return (
+    <div className={`playground ${cls}`}>
+      {gotcha ? (
+        <>
+          <div className="playground-emoji">🗿</div>
+          <h2>PETRIFIED!</h2>
+          <p>That&apos;s what red light feels like. Close your eyes sooner!</p>
+        </>
+      ) : (
+        <>
+          <div className="playground-emoji">{GAZE_ICONS[st]}</div>
+          <h2>
+            {st === 1 ? 'HIDDEN' : st === 2 ? 'SHE CAN SEE YOU' : 'CAN’T FIND YOUR FACE'}
+          </h2>
+          <p>
+            {st === 1
+              ? 'Eyes closed — this is safety during red light.'
+              : st === 2
+                ? 'Eyes open — during red light this fills the meter below.'
+                : 'Hold the phone so it sees your face. Hiding is only a slower death.'}
+          </p>
+        </>
+      )}
+      <div className="playground-meter">
+        <div
+          className="playground-meter-fill"
+          style={{ width: `${Math.round(meter * 100)}%` }}
+        />
+      </div>
+      <p className="playground-hint">
+        Try it: blink slowly · close your eyes · cover the lens. This is exactly
+        how Medusa will see you.
+      </p>
+      <div className="eyecam" ref={cam.previewRef} />
+    </div>
+  );
+}
+
+// Full-screen state feedback during an eye-mode round: the player must NEVER
+// wonder what the game thinks their eyes are doing. Color floods the whole
+// controller by state; the death meter is a fat bar; tier creep is spelled
+// out. Pointer events pass through — the TouchSurface underneath still runs
+// the character.
+function FeedbackOverlay({
+  pulseRef,
+}: {
+  pulseRef: React.MutableRefObject<{ msg: MedusaPulseMsg; at: number } | null>;
+}) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const iv = setInterval(() => setTick((t) => t + 1), 120);
+    return () => clearInterval(iv);
+  }, []);
+  const pulse = pulseRef.current;
+  const fresh = pulse && performance.now() - pulse.at < 900 ? pulse.msg : null;
+  const phase = fresh ? fresh.g[0] : 0; // 0 green / 1 turning / 2 red / 3 returning
+  const meterQ = fresh ? fresh.me[2] : 0;
+  const tier = fresh ? fresh.me[3] : 0;
+  const eyes = performance.now() - localGaze.at < 1500 ? localGaze.s : 3;
+
+  const danger = phase === 1 || phase === 2;
+  const cls = !danger
+    ? 'fb-green'
+    : eyes === 1
+      ? 'fb-safe'
+      : eyes === 2
+        ? 'fb-seen'
+        : 'fb-unknown';
+  return (
+    <div className={`feedback-overlay ${cls}`}>
+      {meterQ > 2 && (
+        <div className="fb-meter">
+          <div className="fb-meter-fill" style={{ width: `${meterQ}%` }} />
+        </div>
+      )}
+      {danger && (
+        <div className="fb-banner">
+          {eyes === 1 ? (
+            <>
+              <span className="fb-emoji">😑</span>
+              <span>EYES CLOSED — GO!</span>
+            </>
+          ) : eyes === 2 ? (
+            <>
+              <span className="fb-emoji">👁</span>
+              <span>SHE SEES YOU — CLOSE YOUR EYES!</span>
+            </>
+          ) : (
+            <>
+              <span className="fb-emoji">❔</span>
+              <span>CAN&apos;T SEE YOU — SHE&apos;S COMING</span>
+            </>
+          )}
+        </div>
+      )}
+      {phase === 1 && <div className="fb-sub">⚠ SHE&apos;S TURNING</div>}
+      {tier > 0 && (
+        <div className="fb-tier">🗿 stone up to your {tier >= 2 ? 'LEGS' : 'feet'}</div>
+      )}
     </div>
   );
 }
@@ -354,54 +500,12 @@ const BUZZ_PATTERNS: Record<BuzzType, number[]> = {
   creep: [70, 40, 70], // the stone crept up a tier
 };
 
-// While Medusa watches, the phone becomes the mirrored bronze shield: the
-// big screen shows only her face, so this little reflection is the player's
-// whole world. It renders the field with the SAME three.js art and camera
-// as the stage (lazy chunk — loaded only here), horizontally mirrored, and
-// is visible only while her gaze is red; the TouchSurface stays mounted
-// underneath, so inputs are identical (world-mapped) in both views.
-function ShieldOverlay({
-  fieldRef,
-  shieldRef,
-  colorsRef,
-  selfSlot,
-}: {
-  fieldRef: React.MutableRefObject<MedusaFieldMsg | null>;
-  shieldRef: React.MutableRefObject<{ msg: MedusaShieldMsg; at: number } | null>;
-  colorsRef: React.MutableRefObject<Map<number, string>>;
-  selfSlot: number;
-}) {
-  const boxRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    let disposed = false;
-    let renderer: ShieldRenderer3D | null = null;
-    void (async () => {
-      const mod = await import('../render/shield3d');
-      if (disposed || !boxRef.current) return;
-      renderer = mod.createShieldRenderer({
-        field: () => fieldRef.current,
-        shield: () => shieldRef.current,
-        colors: () => colorsRef.current,
-        selfSlot: () => selfSlot,
-      });
-      renderer.mount(boxRef.current);
-    })();
-    return () => {
-      disposed = true;
-      renderer?.dispose();
-    };
-  }, [fieldRef, shieldRef, colorsRef, selfSlot]);
-  return <div ref={boxRef} className="shield-box" />;
-}
-
 export function Play() {
   const navigate = useNavigate();
   const [me, setMe] = useState<MeState | null>(null);
   const [room, setRoom] = useState<RoomState | null>(null);
-  // Medusa shield-view plumbing (refs — the canvas loop reads them directly).
-  const fieldRef = useRef<MedusaFieldMsg | null>(null);
-  const shieldRef = useRef<{ msg: MedusaShieldMsg; at: number } | null>(null);
-  const colorsRef = useRef(new Map<number, string>());
+  // Medusa personal-pulse plumbing (the feedback overlay reads the ref).
+  const pulseRef = useRef<{ msg: MedusaPulseMsg; at: number } | null>(null);
   const lastMeterRef = useRef(0);
   const [connected, setConnected] = useState(socket.connected);
   const [joinError, setJoinError] = useState('');
@@ -438,17 +542,12 @@ export function Play() {
         // vibration is a nice-to-have
       }
     };
-    const onField = (msg: MedusaFieldMsg) => {
-      fieldRef.current = msg;
-      shieldRef.current = null;
-      lastMeterRef.current = 0;
-    };
-    const onShield = (msg: MedusaShieldMsg) => {
-      shieldRef.current = { msg, at: performance.now() };
+    const onPulse = (msg: MedusaPulseMsg) => {
+      pulseRef.current = { msg, at: performance.now() };
       dbg['server'] =
         `gaze=${['green', 'turning', 'RED', 'returning'][msg.g[0]]} ` +
         `meter=${msg.me[2]} tier=${msg.me[3]} ` +
-        `eff=${['shield', 'closed', 'caught', 'unknown'][msg.me[4]] ?? 'classic'} ` +
+        `eyes=${['', 'closed', 'OPEN', 'unknown'][msg.me[4]] ?? 'classic'} ` +
         `@(${msg.me[0]},${msg.me[1]})`;
       // Escalating warning as the meter climbs: vibration at each threshold.
       const q = msg.me[2];
@@ -467,8 +566,7 @@ export function Play() {
     socket.on('me', setMe);
     socket.on('room', setRoom);
     socket.on('buzz', onBuzz);
-    socket.on('field', onField);
-    socket.on('shield', onShield);
+    socket.on('pulse', onPulse);
     if (socket.connected) doJoin();
     return () => {
       socket.off('connect', onConnect);
@@ -476,17 +574,10 @@ export function Play() {
       socket.off('me', setMe);
       socket.off('room', setRoom);
       socket.off('buzz', onBuzz);
-      socket.off('field', onField);
-      socket.off('shield', onShield);
+      socket.off('pulse', onPulse);
     };
   }, [navigate]);
 
-  // Slot → color for the shield view's neighbor dots.
-  useEffect(() => {
-    const map = new Map<number, string>();
-    if (room) for (const p of room.players) map.set(p.id, p.color);
-    colorsRef.current = map;
-  }, [room]);
 
   // Keep the phone screen awake during play.
   useEffect(() => {
@@ -557,6 +648,19 @@ export function Play() {
 
   // ---------------------------------------------------------------- lobby
   if (me.phase === 'lobby' || me.game === null) {
+    // Eye mode on → the lobby IS the sensor playground: meet the detector
+    // with nothing at stake before Medusa ever puts a meter behind it.
+    if (room?.options.medusaEyes) {
+      return (
+        <div className="controller" style={{ background: '#0f1220' }}>
+          {reconnectBanner}
+          <EyePlayground />
+          <div className="playground-id">
+            #{String(num).padStart(2, '0')} {me.name}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="controller" style={{ background: `color-mix(in srgb, ${tint} 45%, #0f1220)` }}>
         {reconnectBanner}
@@ -728,20 +832,13 @@ export function Play() {
           }}
           onHold={() => sendInput({ t: 'ping' })}
         />
-        {me.eyeMode && (
-          <ShieldOverlay
-            fieldRef={fieldRef}
-            shieldRef={shieldRef}
-            colorsRef={colorsRef}
-            selfSlot={me.playerId}
-          />
-        )}
+        {me.eyeMode && <FeedbackOverlay pulseRef={pulseRef} />}
         {me.eyeMode && <MedusaGazeCam />}
         <div className="controller-hud">
           <div className="big-num" style={{ opacity: 0.25 }}>{num}</div>
           <div className="hint">
             {me.eyeMode
-              ? 'TAP to run · when she turns: LOOK AT YOUR PHONE (slow) or CLOSE YOUR EYES (fast, blind)!'
+              ? 'TAP to run · CLOSE YOUR EYES when she turns — and keep going, blind!'
               : 'TAP to run · swipe to dodge pits · watch the big screen — FREEZE when she turns!'}
           </div>
           <div className="hint" style={{ opacity: 0.7 }}>

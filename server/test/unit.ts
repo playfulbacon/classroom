@@ -339,6 +339,16 @@ function makeMedusa(playerCount: number, medusaEyes = false) {
     for (const band of field.chasms) {
       const ferries = field.platforms.filter((p) => p.c0 === band.c0 && p.c1 === band.c1);
       assert.ok(ferries.length >= 2, `seed ${seed}: band needs >=2 ferries`);
+      // Stepping off a ferry (either bank) must never land against a pit.
+      for (const col of [band.c0 - 1, band.c1 + 1]) {
+        for (let lane = 0; lane < lanes; lane++) {
+          const k = cellKey(col, lane, L);
+          assert.ok(
+            !field.pits.has(k) && !field.crumble.has(k),
+            `seed ${seed}: obstacle beside a chasm at (${col},${lane})`,
+          );
+        }
+      }
     }
   }
 }
@@ -531,7 +541,7 @@ console.log('unit: medusa crumbling ground OK');
   // Tick n times, refreshing a gaze report so it never goes stale.
   const run = (game: Medusa, internals: any, slot: number, s: number, c: number, n: number) => {
     for (let i = 0; i < n; i++) {
-      if (i % 8 === 0) game.input(slot, { t: 'gaze', s: s as 0 | 1 | 2 | 3, c });
+      if (i % 8 === 0) game.input(slot, { t: 'gaze', s: s as 1 | 2 | 3, c });
       internals.tick(1 / 20);
     }
   };
@@ -647,7 +657,7 @@ console.log('unit: medusa crumbling ground OK');
     assert.equal(r.state, 0, 'the hop itself never petrifies');
   }
 
-  // (i) Stone slows: tier and shield movement stretch the hop cooldown.
+  // (i) Stone slows: tiers stretch the hop cooldown.
   {
     const { game, internals } = makeMedusa(2, true);
     const r = place(internals, 1);
@@ -669,21 +679,6 @@ console.log('unit: medusa crumbling ground OK');
     internals.t = 10.4;
     game.input(1, { t: 'hop', d: 'f' });
     assert.equal(r.col, 7, 'and releases after 0.36s');
-
-    // Shield-up during red: deliberate, careful movement (0.18 * 2.5).
-    holdRed(internals, 20);
-    r.tier = 0;
-    r.eff = 0; // GZ_SHIELD
-    cell(8);
-    cell(9);
-    game.input(1, { t: 'hop', d: 'f' });
-    assert.equal(r.col, 8);
-    internals.t = 20.3;
-    game.input(1, { t: 'hop', d: 'f' });
-    assert.equal(r.col, 8, 'shield movement is slow');
-    internals.t = 20.5;
-    game.input(1, { t: 'hop', d: 'f' });
-    assert.equal(r.col, 9, 'but it moves');
   }
 }
 console.log('unit: medusa v2 gaze meter OK');

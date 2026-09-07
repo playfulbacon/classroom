@@ -1,7 +1,6 @@
 // Medusa stage renderer: isometric three.js scene (code-split — only the
 // stage loads this chunk, and only when a Medusa round starts). The scene
-// art itself (field, obstacles, avatars, motion) lives in medusaScene.ts,
-// shared with the phone's bronze-shield renderer so the reflection matches.
+// art itself (field, obstacles, avatars, motion) lives in medusaScene.ts.
 //
 // World axes: x = race axis (left → right, Medusa at high x), z = lanes
 // (screen depth), y = up. One grid cell = 1 world unit.
@@ -30,6 +29,7 @@ import {
   subCellOffset,
   turnToStone,
   updateAvatarMotion,
+  followFerry,
   lerpPlatforms,
   type Avatar,
   type FieldHandles,
@@ -365,15 +365,37 @@ export function createMedusaRenderer(
         tx = s.length + 0.2 + (rank % 3) * 0.55;
         tz = fieldCenterZ() + (rank % 2 === 0 ? 1 : -1) * (1.5 + Math.floor(rank / 6));
       }
+      av.cellCol = col;
+      av.cellLane = lane;
+      const ferryCell =
+        (fieldHandles?.pitKeys.has(lane * 1000 + col) ?? false) && state !== ST_FINISHED;
       if (Math.abs(tx - av.tx) > 0.001 || Math.abs(tz - av.tz) > 0.001) {
-        av.fromX = av.x;
-        av.fromZ = av.z;
-        av.tx = tx;
-        av.tz = tz;
-        av.hopStart = clockT;
-        // On a pit cell = riding a ferry: slide with it instead of hopping.
-        av.glide =
-          (fieldHandles?.pitKeys.has(lane * 1000 + col) ?? false) && state !== ST_FINISHED;
+        if (av.onFerry && ferryCell) {
+          // Still riding: the server cell drifts with the ferry — no new
+          // hop; followFerry() keeps the avatar glued to the slab.
+          av.tx = tx;
+          av.tz = tz;
+        } else {
+          // A real hop: onto solid ground, onto a ferry (arc onto the
+          // slab's ACTUAL position, then attach), or off one.
+          av.fromX = av.x;
+          av.fromZ = av.z;
+          av.tx = tx;
+          av.tz = tz;
+          av.hopStart = clockT;
+          av.onFerry = false;
+          av.attachAfter = ferryCell;
+          if (ferryCell && fieldHandles) {
+            for (const [id, def] of fieldHandles.platformDefs) {
+              if (def.lane === lane && col >= def.c0 && col <= def.c1) {
+                const mesh = fieldHandles.platformMeshes.get(id);
+                if (mesh) av.tx = mesh.position.x + ox * 0.3;
+                break;
+              }
+            }
+            av.tz = lane + oz * 0.3;
+          }
+        }
       }
       if (state !== av.state) {
         if (state === ST_STONE) {
@@ -429,7 +451,12 @@ export function createMedusaRenderer(
     }
 
     for (const av of avatars.values()) updateAvatarMotion(av, dt, clockT);
-    if (fieldHandles) lerpPlatforms(fieldHandles, platformTargets, dt);
+    if (fieldHandles) {
+      lerpPlatforms(fieldHandles, platformTargets, dt);
+      for (const av of avatars.values()) {
+        if (av.onFerry && av.hopStart < 0) followFerry(av, fieldHandles, dt);
+      }
+    }
     updateHead(dt);
     updateOneShots();
     updateCamera(s, w / h, dt);
@@ -705,7 +732,7 @@ export function createMedusaRenderer(
     ctx.textBaseline = 'middle';
     ctx.font = `800 ${Math.round(h * 0.05)}px system-ui`;
     ctx.fillStyle = '#ffd9dc';
-    ctx.fillText('LOOK AT YOUR PHONE — OR CLOSE YOUR EYES', w / 2, h * 0.9);
+    ctx.fillText('CLOSE YOUR EYES — KEEP MOVING', w / 2, h * 0.9);
 
     // Endangered numbers, worst first.
     const endangered = s.players
@@ -799,7 +826,7 @@ export function createMedusaRenderer(
       ctx.font = `700 ${Math.round(h * 0.035)}px system-ui`;
       ctx.fillText(
         s.eyesMode
-          ? 'Reach Medusa in time — when she turns: look at your phone, or close your eyes!'
+          ? 'Reach Medusa in time — when she turns, close your eyes and keep moving!'
           : 'Reach Medusa before time runs out — freeze when she turns!',
         w / 2,
         h * 0.8,

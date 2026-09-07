@@ -1,13 +1,12 @@
-// Shared Medusa scene art: everything both the stage renderer (medusa3d.ts)
-// and the phone's bronze-shield renderer (shield3d.ts) draw the same way —
-// field, obstacles, ferries, crumble, avatars and their motion. Extracted
-// verbatim from the stage renderer so the shield is a true reflection.
+// Medusa scene art: field, obstacles, ferries, crumble, avatars and their
+// motion — kept separate from the stage renderer's staging (head, cameras,
+// HUD) so the art layer stays reusable.
 //
 // World axes: x = race axis (left → right, Medusa at high x), z = lanes
 // (screen depth), y = up. One grid cell = 1 world unit.
 
 import * as THREE from 'three';
-import type { MedusaFieldMsg, MedusaSnapshot } from '../../../shared/protocol';
+import type { MedusaSnapshot } from '../../../shared/protocol';
 
 export const HOP_DUR = 0.2;
 
@@ -17,10 +16,11 @@ export const ST_FINISHED = 2;
 
 export const SCENE_BG = 0x10142a;
 
-// The one isometric viewing direction — stage and shield share it exactly.
+// The one isometric viewing direction for the stage camera.
 export const ISO_DIR = new THREE.Vector3(-0.62, 0.85, 1).normalize();
 
 export interface Avatar {
+  slot: number;
   group: THREE.Group;
   bodyMat: THREE.MeshLambertMaterial;
   headMat: THREE.MeshLambertMaterial;
@@ -31,9 +31,14 @@ export interface Avatar {
   tx: number;
   tz: number;
   hopStart: number; // seconds, -1 when idle
-  glide: boolean; // riding a ferry — slide instead of hopping
   fromX: number;
   fromZ: number;
+  // Ferry riding: after a boarding hop lands (attachAfter), the avatar is
+  // attached to the platform mesh and follows it continuously.
+  onFerry: boolean;
+  attachAfter: boolean;
+  cellCol: number; // latest server cell (for ferry lookup)
+  cellLane: number;
   state: number;
   stoneAt: number;
   tier: number; // 0..2 — how far the stone has crept
@@ -51,12 +56,12 @@ export interface CrumbleCell {
 
 export interface FieldHandles {
   platformMeshes: Map<number, THREE.Mesh>;
+  platformDefs: Map<number, { lane: number; c0: number; c1: number }>;
   crumbleCells: Map<number, CrumbleCell>; // key lane*1000+col
-  pitKeys: Set<number>; // key lane*1000+col — for ferry-glide detection
+  pitKeys: Set<number>; // key lane*1000+col — for ferry detection
 }
 
-// Normalized field layout both the stage snapshot and the phone's one-time
-// 'field' message can produce.
+// Normalized field layout (produced from the stage snapshot).
 export interface MedusaFieldLayout {
   length: number;
   lanes: number;
@@ -72,16 +77,6 @@ export function layoutFromSnapshot(s: MedusaSnapshot): MedusaFieldLayout {
     pits: s.pits,
     platforms: s.platforms.map(([id, lane, c0, c1, pos]) => ({ id, lane, c0, c1, pos })),
     crumble: s.crumble,
-  };
-}
-
-export function layoutFromFieldMsg(m: MedusaFieldMsg): MedusaFieldLayout {
-  return {
-    length: m.length,
-    lanes: m.lanes,
-    pits: m.pits,
-    platforms: m.platforms.map((p) => ({ ...p, pos: p.c0 })),
-    crumble: m.crumble.map(([c, l]) => [c, l, 0]),
   };
 }
 
@@ -121,6 +116,7 @@ export function buildField(root: THREE.Group, layout: MedusaFieldLayout): FieldH
   const cz = (lanes - 1) / 2;
   const handles: FieldHandles = {
     platformMeshes: new Map(),
+    platformDefs: new Map(),
     crumbleCells: new Map(),
     pitKeys: new Set(layout.pits.map(([c, l]) => l * 1000 + c)),
   };
@@ -215,7 +211,7 @@ export function buildField(root: THREE.Group, layout: MedusaFieldLayout): FieldH
   }
 
   // Ferry platforms: bronze slabs shuttling across the gorges.
-  for (const { id, lane, pos } of layout.platforms) {
+  for (const { id, lane, c0, c1, pos } of layout.platforms) {
     const slab = new THREE.Mesh(
       new THREE.BoxGeometry(0.92, 0.14, 0.92),
       new THREE.MeshLambertMaterial({ color: 0xa8763e }),
@@ -223,6 +219,7 @@ export function buildField(root: THREE.Group, layout: MedusaFieldLayout): FieldH
     slab.position.set(pos, 0.09, lane);
     root.add(slab);
     handles.platformMeshes.set(id, slab);
+    handles.platformDefs.set(id, { lane, c0, c1 });
   }
 
   // Crumbling ground: dry cracked tiles that collapse behind the crowd.
@@ -326,6 +323,7 @@ export function makeAvatar(slot: number, color: string, parent: THREE.Object3D):
   group.add(stoneLegs);
   parent.add(group);
   return {
+    slot,
     group,
     bodyMat,
     headMat,
@@ -335,9 +333,12 @@ export function makeAvatar(slot: number, color: string, parent: THREE.Object3D):
     tx: 0,
     tz: 0,
     hopStart: -1,
-    glide: false,
     fromX: 0,
     fromZ: 0,
+    onFerry: false,
+    attachAfter: false,
+    cellCol: 0,
+    cellLane: 0,
     state: ST_RUN,
     stoneAt: 0,
     tier: 0,
@@ -377,18 +378,11 @@ export function setBlindfold(av: Avatar, on: boolean) {
   if (blindfold) blindfold.visible = on;
 }
 
-// One avatar's per-frame motion: hop arc with landing squash, ferry glide,
-// idle bob while running, shake when freshly petrified.
+// One avatar's per-frame motion: hop arc with landing squash, idle bob
+// while running, shake when freshly petrified. Ferry-attached avatars are
+// positioned by followFerry() instead of the ground branch.
 export function updateAvatarMotion(av: Avatar, dt: number, clockT: number) {
-  if (av.hopStart >= 0 && av.glide) {
-    // Ferry ride: ease toward the target with no arc.
-    const k = 1 - Math.exp(-10 * dt);
-    av.x += (av.tx - av.x) * k;
-    av.z += (av.tz - av.z) * k;
-    av.group.position.set(av.x, 0.14, av.z);
-    av.group.scale.set(1, 1, 1);
-    if (Math.abs(av.tx - av.x) + Math.abs(av.tz - av.z) < 0.01) av.hopStart = -1;
-  } else if (av.hopStart >= 0) {
+  if (av.hopStart >= 0) {
     // Hop interpolation.
     const p = Math.min(1, (clockT - av.hopStart) / HOP_DUR);
     av.x = av.fromX + (av.tx - av.fromX) * p;
@@ -398,9 +392,13 @@ export function updateAvatarMotion(av: Avatar, dt: number, clockT: number) {
     // Squash on landing.
     const squash = p > 0.85 ? 1 - (1 - (1 - p) / 0.15) * 0.15 : 1;
     av.group.scale.set(1 / squash, squash, 1 / squash);
-    if (p >= 1) av.hopStart = -1;
-  } else {
-    av.group.position.set(av.x, av.glide ? 0.14 : 0, av.z);
+    if (p >= 1) {
+      av.hopStart = -1;
+      av.onFerry = av.attachAfter; // boarding hop landed → ride
+      av.attachAfter = false;
+    }
+  } else if (!av.onFerry) {
+    av.group.position.set(av.x, 0, av.z);
     av.group.scale.set(1, 1, 1);
   }
 
@@ -417,6 +415,25 @@ export function updateAvatarMotion(av: Avatar, dt: number, clockT: number) {
       av.group.rotation.z = 0;
     }
   }
+}
+
+// A rider between hops: track the ferry slab continuously (with the
+// avatar's own little sub-cell offset), so the ride is perfectly smooth.
+export function followFerry(av: Avatar, handles: FieldHandles, dt: number) {
+  let mesh: THREE.Mesh | null = null;
+  for (const [id, def] of handles.platformDefs) {
+    if (def.lane === av.cellLane && av.cellCol >= def.c0 && av.cellCol <= def.c1) {
+      mesh = handles.platformMeshes.get(id) ?? null;
+      break;
+    }
+  }
+  if (!mesh) return;
+  const [ox, oz] = subCellOffset(av.slot);
+  const k = 1 - Math.exp(-14 * dt);
+  av.x += (mesh.position.x + ox * 0.3 - av.x) * k;
+  av.z += (av.cellLane + oz * 0.3 - av.z) * k;
+  av.group.position.set(av.x, 0.16, av.z);
+  av.group.scale.set(1, 1, 1);
 }
 
 // Ease ferry slabs toward their latest reported positions.

@@ -11,8 +11,7 @@ import { io, type Socket } from 'socket.io-client';
 import type {
   JoinResponse,
   LosSnapshot,
-  MedusaFieldMsg,
-  MedusaShieldMsg,
+  MedusaPulseMsg,
   MedusaSnapshot,
   MeState,
   PuzzleSnapshot,
@@ -471,19 +470,13 @@ async function main() {
   // Eye mode is ON for the round, but per-player: only phones streaming eye
   // reports get eye rules — everyone else (victim, faller, safe runners)
   // exercises the classic path in the same round.
-  // Phone-channel contract: players get the static 'field' layout once and
-  // a personal 'shield' stream during her gaze — but NEVER stage snapshots.
-  let fieldMsgs = 0;
-  let shieldMsgs = 0;
-  let lastField: MedusaFieldMsg | null = null;
-  let lastShield: MedusaShieldMsg | null = null;
-  bots[2].socket.on('field', (m: MedusaFieldMsg) => {
-    fieldMsgs++;
-    lastField = m;
-  });
-  bots[2].socket.on('shield', (m: MedusaShieldMsg) => {
-    shieldMsgs++;
-    lastShield = m;
+  // Phone-channel contract: players get a personal 'pulse' stream through
+  // the round — but NEVER stage snapshots.
+  let pulseMsgs = 0;
+  let lastPulse: MedusaPulseMsg | null = null;
+  bots[2].socket.on('pulse', (m: MedusaPulseMsg) => {
+    pulseMsgs++;
+    lastPulse = m;
   });
   bots[2].socket.on('snapshot', () => fail('a phone received a stage snapshot'));
   stage.emit('host:start', { game: 'medusa', options: { medusaEyes: true } });
@@ -513,13 +506,10 @@ async function main() {
   const noCamera = bots[0].slot; // never reports — the slow death must find them
   const pitBumper = bots[1].slot; // deliberately hops at pits — must just bounce
   const closedRunner = bots[2].slot; // streams eyes-closed, never stops hopping
-  const caughtStarer = bots[3].slot; // streams CAUGHT, stands still → tiers → stone
-  const shieldMover = bots[4].slot; // streams SHIELD, keeps moving through red
+  const openStarer = bots[3].slot; // streams eyes-open, stands still → tiers → stone
   let bumpAttempts = 0;
   let starerTierSeen = 0;
   let noCameraMeterSeen = 0;
-  let shieldLastPos = -1;
-  let shieldMovedInRed = false;
 
   let driverTick = 0;
   const medusaDriver = setInterval(() => {
@@ -572,27 +562,10 @@ async function main() {
     };
     // Track meter/tier evidence for the assertions below.
     {
-      const starer = pos.get(caughtStarer);
+      const starer = pos.get(openStarer);
       if (starer) starerTierSeen = Math.max(starerTierSeen, starer[6]);
       const nc = pos.get(noCamera);
       if (nc) noCameraMeterSeen = Math.max(noCameraMeterSeen, nc[5]);
-      const sm = pos.get(shieldMover);
-      if (sm && sm[3] === 0 && s.gaze.state === 'red') {
-        // Cell changes between red snapshots prove shield hops land during
-        // red — ferry rides (pit cells) don't count.
-        const cell = sm[2] * 1000 + sm[1];
-        if (
-          shieldLastPos >= 0 &&
-          cell !== shieldLastPos &&
-          !isPit(sm[1], sm[2]) &&
-          !pitSet.has(shieldLastPos)
-        ) {
-          shieldMovedInRed = true;
-        }
-        shieldLastPos = cell;
-      } else {
-        shieldLastPos = -1;
-      }
     }
     for (const bot of bots) {
       const p = pos.get(bot.slot);
@@ -609,17 +582,10 @@ async function main() {
         if (green && driverTick % 3 === 0 && col < 12) advance();
         continue;
       }
-      if (bot.slot === caughtStarer) {
-        // Streams high-confidence CAUGHT and never moves: tiers must climb
-        // and the meter must fill to a statue.
+      if (bot.slot === openStarer) {
+        // Streams eyes-OPEN and never moves: tiers must climb and the meter
+        // must fill to a statue — movement was never the crime.
         bot.socket.emit('input', { t: 'gaze', s: 2, c: 0.9 });
-        continue;
-      }
-      if (bot.slot === shieldMover) {
-        // Streams SHIELD and — until red movement is proven — hops ONLY
-        // during red, so the property can't be dodged by crossing on greens.
-        bot.socket.emit('input', { t: 'gaze', s: 0, c: 0.9 });
-        if (shieldMovedInRed || s.gaze.state === 'red') advance();
         continue;
       }
       // Everyone else (closedRunner included) plays eyes-closed and sprints
@@ -659,7 +625,7 @@ async function main() {
     return s.players.some((p) => p[1] >= 5) ? true : null;
   });
   // Snapshot gaze flags: 3 (unknown) for the camera-less, 1 (closed) for the
-  // blind sprinter, 0 (shield) for the shield mover.
+  // blind sprinter.
   {
     const s = latestSnapshot as unknown as MedusaSnapshot;
     if (!s.eyesMode) fail('snapshot must flag eyesMode for a v2 round');
@@ -668,39 +634,23 @@ async function main() {
     if (gzOf(closedRunner) !== 1) {
       fail(`closed runner gz flag ${gzOf(closedRunner)}, expected 1`);
     }
-    if (gzOf(shieldMover) !== 0) fail(`shield mover gz flag ${gzOf(shieldMover)}, expected 0`);
   }
-  await waitFor('the caught starer to tier up and petrify standing still', 45000, () => {
+  await waitFor('the open-eyed starer to tier up and petrify standing still', 45000, () => {
     const s = latestSnapshot as MedusaSnapshot | null;
     if (!s || s.kind !== 'medusa') return null;
-    const p = s.players.find((q) => q[0] === caughtStarer);
+    const p = s.players.find((q) => q[0] === openStarer);
     return p && p[3] === 1 ? true : null;
   });
   if (starerTierSeen < 1) {
-    fail(`caught starer petrified without ever reaching tier 1 (saw ${starerTierSeen})`);
+    fail(`open starer petrified without ever reaching tier 1 (saw ${starerTierSeen})`);
   }
   // By now at least one red has passed: verify the phone channel.
   {
-    if (fieldMsgs < 1) fail('phone never received the field layout');
-    const f = lastField as MedusaFieldMsg | null;
-    if (!f || f.length !== 24 || f.platforms.length < 2 || f.pits.length === 0) {
-      fail('field layout message incomplete');
-    }
-    if (shieldMsgs < 3) fail(`only ${shieldMsgs} shield messages during her gaze`);
-    const sh = lastShield as MedusaShieldMsg | null;
-    if (!sh) fail('no shield message captured');
-    else {
-      const [mc, ml] = sh.me;
-      for (const [slot, c, l] of sh.near) {
-        if (Math.abs(c - mc) > 3 || Math.abs(l - ml) > 3) {
-          fail(`shield 'near' leaked far player ${slot} at (${c},${l}) from (${mc},${ml})`);
-        }
-      }
-      if (sh.me[4] !== 1) fail(`closed runner shield gz ${sh.me[4]}, expected 1`);
-    }
-    console.log(
-      `medusa: phone channel — 1 field msg, ${shieldMsgs} shield msgs, near-window clean, no snapshots`,
-    );
+    if (pulseMsgs < 10) fail(`only ${pulseMsgs} pulse messages reached the phone`);
+    const pu = lastPulse as MedusaPulseMsg | null;
+    if (!pu || pu.me.length !== 5 || pu.g.length !== 2) fail('pulse message malformed');
+    else if (pu.me[4] !== 1) fail(`closed runner pulse eyes ${pu.me[4]}, expected 1 (closed)`);
+    console.log(`medusa: phone channel — ${pulseMsgs} pulses, no snapshots`);
   }
   await waitFor('the closed-eyes runner to finish alive', 60000, () => {
     const s = latestSnapshot as MedusaSnapshot | null;
@@ -710,7 +660,7 @@ async function main() {
     return p && p[3] === 2 ? true : null;
   });
   console.log(
-    `medusa: v2 gaze — caught starer tiered (max ${starerTierSeen}) then petrified; blind sprinter escaped`,
+    `medusa: eyes-only — open starer tiered (max ${starerTierSeen}) then petrified; blind sprinter escaped`,
   );
   const statueBot = await waitFor('the camera-less player to die the slow death', 90000, () => {
     const s = latestSnapshot as MedusaSnapshot | null;
@@ -752,17 +702,6 @@ async function main() {
   }
   if (medDone.players.some((p) => p[3] > 2)) {
     fail('a player left running/stone/finished — nothing else exists now');
-  }
-  if (!shieldMovedInRed) {
-    fail('shield mover never advanced during red — shield movement must be legal');
-  }
-  {
-    // (The final timeout gaze petrifies everyone still running — that one
-    // doesn't count against the shield.)
-    const sm = medDone.players.find((p) => p[0] === shieldMover);
-    if (sm && sm[3] === 1 && medDone.t < 89) {
-      fail('shield mover petrified — shield-up is a safe state');
-    }
   }
   const winner = bots.find((b) => b.slot === medDone.finished[0]);
   if (winner && winner.me?.placement !== 1) {

@@ -61,31 +61,32 @@ plus synthesized sound cues. Drop a `medusa.glb` into
 `client/public/models/` to replace the built-in procedural head (see the
 README there).
 
-**👁 Eye mode** (lobby checkbox): the real Medusa rules — it's about
-where you *look*, never whether you move. When she turns, the projector
-**cuts to her face, fullscreen**: the field vanishes from the big screen
-and each phone becomes a **mirrored bronze shield** — a dim, warped
-reflection of a couple of hops around you, forward up and left/right
-flipped (the image is mirrored, your swipes aren't). You have exactly two
-safe states, verified by the front camera: **look at your phone** (move
-slowly by the shield) or **close your eyes** (move at full speed, blind —
-memorize the route). Getting caught looking up fills a per-player **gaze
-meter** (~1s to stone); hiding from the camera fills it slowly (~2.5s) —
-never an advantage, just a slower death. Stone **creeps up you in tiers**
-that slow your hops before it claims you, only provably-caught frames
-raise them, and tiers decay during green — redemption is possible. Her
-gaze is a **sweeping cone**, and statues block it: survivors hide behind
-the petrified, so every death is cover for the living. All the feedback
-is diegetic — the shield's rim glows when you're safe, snakes coil around
-it as the meter rises, cracks spread when tracking drops, your phone buzzes
-as the stone climbs, and the hall hears the hissing get louder.
+**👁 Eye mode** (default on — a lobby checkbox drops back to classic):
+the real Medusa rules — it's about whether your **eyes are open**, never
+whether you move. When she turns, the projector **cuts to her face,
+fullscreen**, and there is exactly one safe state, verified by the front
+camera: **close your eyes** and keep running blind — memorize the route.
+Getting caught with your eyes open fills a per-player **gaze meter**
+(~1s to stone); hiding from the camera fills it slowly (~2.5s) — never
+an advantage, just a slower death. Stone **creeps up you in tiers** that
+slow your hops before it claims you, only provably-open frames raise
+them, and tiers decay during green — redemption is possible. Her gaze is
+a **sweeping cone**, and statues block it: survivors hide behind the
+petrified, so every death is cover for the living. The phone screams
+your state at you the whole round: a **full-screen color wash** (green
+run / teal safe / red seen / amber can't-see-you), giant banners ("EYES
+CLOSED — GO!", "SHE SEES YOU — CLOSE YOUR EYES!"), a fat death-meter
+bar, vibration ramps as the stone climbs, and the hall hears the hissing
+get louder. While waiting in the lobby the phone runs an **eye
+playground** — a safe sandbox showing exactly what the sensor sees, with
+a demo meter and a mock petrify, so every player trusts the blink
+detection before the round starts.
 
-Detection runs entirely on the phone (MediaPipe face landmarks + head
-pose, with a quick "look at your phone" calibration); **video never
-leaves the device** — only a tiny safe/caught state goes to the server.
-Players get a one-tap consent card first. Note: browsers only expose the
-camera on **HTTPS or localhost**, so eye mode needs a deployed (or
-tunneled) HTTPS URL when phones join over LAN.
+Detection runs entirely on the phone (MediaPipe face landmarks, blink
+only); **video never leaves the device** — only a tiny open/closed state
+code goes to the server. Players get a one-tap consent card first. Note:
+browsers only expose the camera on **HTTPS or localhost**, so eye mode
+needs a deployed (or tunneled) HTTPS URL when phones join over LAN.
 
 ## Quick start
 
@@ -208,7 +209,7 @@ server/              Node + Express + Socket.IO
     medusa.ts            red-light-green-light: gaze state machine, blocking
                          obstacles + ferry riding + crumble lifecycle, and the
                          eye-mode gaze meter (sweeping cone, statue shadows,
-                         stone tiers, per-phone shield stream)
+                         stone tiers, per-phone pulse stream)
     medusaField.ts       field generation with explicit BFS solvability:
                          carved safe paths, chasm bands, ferries, crumble
 client/              Vite + React
@@ -218,11 +219,9 @@ client/              Vite + React
   src/render/            canvas renderers (interpolation, tweening, confetti)
   src/art.ts             deterministic procedural artwork per puzzle group —
                          only the group id travels over the network
-  src/gaze.ts            lazy-loaded on-device gaze classification (MediaPipe
-                         face landmarks + head pose) for Medusa eye mode —
-                         emits only a tiny state code, video stays on the phone
-  src/render/shield.ts   the phone's mirrored bronze shield view (2D canvas —
-                         phones never load three.js)
+  src/gaze.ts            lazy-loaded on-device blink detection (MediaPipe
+                         face landmarks) for Medusa eye mode — emits only a
+                         tiny open/closed code, video stays on the phone
 ```
 
 Design notes:

@@ -124,13 +124,12 @@ export const MEDUSA_STONE = 1;
 export const MEDUSA_FINISHED = 2;
 
 // Gaze-state codes (phone → server report, and the gz element in the player
-// tuple). During red, SHIELD and CLOSED are the two safe states; CAUGHT
-// (eyes open, gaze off the phone, high confidence) fills the death meter
-// fast, UNKNOWN (no face / camera covered / stale) fills it slowly — hiding
-// from the camera is never safety, just a slower death.
-export const GZ_SHIELD = 0; // eyes open, gaze on the phone
-export const GZ_CLOSED = 1; // eyes closed (may move at full speed, blind)
-export const GZ_CAUGHT = 2; // eyes open and off the phone — her gaze meets yours
+// tuple). The rule is pure open/closed: during red, CLOSED eyes are the one
+// safe state; OPEN eyes fill the death meter fast, UNKNOWN (no face /
+// camera covered / stale) fills it slowly — hiding from the camera is never
+// safety, just a slower death.
+export const GZ_CLOSED = 1; // eyes closed (may keep moving, blind)
+export const GZ_OPEN = 2; // eyes open — her gaze meets yours during red
 export const GZ_UNKNOWN = 3; // tracking lost / covered / never reported
 export const GZ_CLASSIC = -1; // room runs classic rules (eye mode off)
 
@@ -182,27 +181,13 @@ export interface MedusaSnapshot {
   aliveCount: number;
 }
 
-// Static field layout pushed once to each phone at round start / rejoin
-// ('field' event) so the phone can render its shield view without ever
-// receiving stage snapshots.
-export interface MedusaFieldMsg {
-  length: number;
-  lanes: number;
-  pits: [number, number][]; // includes chasm band cells
-  crumble: [number, number][]; // crumble cell locations (all start intact)
-  platforms: { id: number; lane: number; c0: number; c1: number }[];
-}
-
-// Phone shield view stream ('shield' event): sent ~5Hz to each running
-// player while Medusa is turning/red/returning in a v2 round. The big
-// screen shows only her face during red — everything the player can see of
-// the field comes through this little window.
-export interface MedusaShieldMsg {
-  g: [number, number, number]; // [gaze code 0g/1t/2r/3rt, sweep dir, tLeft]
+// Personal state pulse ('pulse' event): sent ~5Hz to each running player
+// through an eye-mode round. Feeds the phone's full-screen state feedback —
+// the player must always know exactly what the game thinks their eyes are
+// doing and how far the stone has crept.
+export interface MedusaPulseMsg {
+  g: [number, number]; // [gaze phase 0 green/1 turning/2 red/3 returning, tLeft]
   me: [number, number, number, number, number]; // [col, lane, meterQ, tier, gz]
-  near: [number, number, number, number, number][]; // [slot,col,lane,state,tier] within r<=3
-  pf: [number, number][]; // ferries near the window: [id, pos]
-  cr: [number, number, number][]; // crumble near the window: [col, lane, stage]
 }
 
 export type StageSnapshot = LosSnapshot | PuzzleSnapshot | MedusaSnapshot;
@@ -272,9 +257,9 @@ export type InputPayload =
   | { t: 'touch'; down: boolean } // Puzzle: finger on/off (drives glow)
   | { t: 'hop'; d: 'f' | 'l' | 'r' | 'b' } // Medusa: hop forward/left/right/back
   | { t: 'ping' } // Medusa: cosmetic "find me" beacon (always safe)
-  // Medusa eye mode: on-device gaze classification — a GZ_* state code plus
+  // Medusa eye mode: on-device eyes-open detection — a GZ_* state code plus
   // a 0..1 confidence. Sent on change plus a ~250ms heartbeat.
-  | { t: 'gaze'; s: 0 | 1 | 2 | 3; c: number };
+  | { t: 'gaze'; s: 1 | 2 | 3; c: number };
 
 export interface HostStartRequest {
   game: GameId;
@@ -286,8 +271,7 @@ export interface HostStartRequest {
 //  'snapshot' StageSnapshot    — stage screens only
 //  'me'       MeState          — one phone
 //  'buzz'     BuzzType         — one phone (vibration cue)
-//  'field'    MedusaFieldMsg   — one phone, once per Medusa round (static layout)
-//  'shield'   MedusaShieldMsg  — one phone, ~5Hz during turning/red/returning (v2)
+//  'pulse'    MedusaPulseMsg   — one phone, ~5Hz through an eye-mode round
 // Client → server:
 //  'stage:create' (cb: {code, room})
 //  'stage:attach' ({code}, cb: StageAttachResponse)

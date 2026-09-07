@@ -471,29 +471,175 @@ input {
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8));
 }
 
-.shield-box {
+/* --- Eye-mode feedback: the whole screen shouts your state ------------- */
+
+.feedback-overlay {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  z-index: 40; /* above the controller HUD, below the eyecam preview */
-  opacity: 0;
-  transition: opacity 0.35s ease;
+  z-index: 30; /* above the controller wash, below the eyecam + 🐞 */
+  transition: background 0.25s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
 }
 
-.shield-webgl {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  /* the reflection is horizontally mirrored — the image, never the controls */
-  transform: scaleX(-1);
+.fb-green {
+  background: transparent;
+  box-shadow: inset 0 0 60px rgba(125, 255, 155, 0.25);
 }
 
-.shield-rim {
+.fb-safe {
+  background: rgba(16, 84, 62, 0.82);
+}
+
+.fb-seen {
+  background: rgba(150, 12, 22, 0.88);
+  animation: fb-pulse 0.5s ease-in-out infinite alternate;
+}
+
+.fb-unknown {
+  background: rgba(105, 82, 20, 0.85);
+}
+
+@keyframes fb-pulse {
+  from {
+    background: rgba(150, 12, 22, 0.82);
+  }
+  to {
+    background: rgba(220, 25, 40, 0.94);
+  }
+}
+
+.fb-meter {
   position: absolute;
-  inset: 0;
-  width: 100%;
+  top: calc(56px + env(safe-area-inset-top));
+  left: 14px;
+  right: 14px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  overflow: hidden;
+}
+
+.fb-meter-fill {
   height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ffe066, #ff9b54, #ff3b4d);
+  transition: width 0.2s linear;
+}
+
+.fb-banner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-size: 26px;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  padding: 0 24px;
+}
+
+.fb-emoji {
+  font-size: 64px;
+  line-height: 1;
+}
+
+.fb-sub {
+  font-size: 16px;
+  font-weight: 700;
+  color: #ffe066;
+}
+
+.fb-tier {
+  font-size: 17px;
+  font-weight: 800;
+  color: #d9d9e2;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 999px;
+  padding: 6px 14px;
+}
+
+/* --- Lobby sensor playground ------------------------------------------- */
+
+.playground {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 24px;
+  transition: background 0.25s ease;
+  color: #fff;
+}
+
+.playground-safe {
+  background: #10543e;
+}
+
+.playground-seen {
+  background: #96131c;
+}
+
+.playground-unknown {
+  background: #5d4a17;
+}
+
+.playground-emoji {
+  font-size: 96px;
+  line-height: 1;
+}
+
+.playground h2 {
+  margin: 0;
+  font-size: 30px;
+  letter-spacing: 0.03em;
+}
+
+.playground p {
+  margin: 0;
+  max-width: 340px;
+  opacity: 0.9;
+}
+
+.playground-meter {
+  width: min(78vw, 340px);
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  overflow: hidden;
+}
+
+.playground-meter-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ffe066, #ff9b54, #ff3b4d);
+  transition: width 0.12s linear;
+}
+
+.playground-hint {
+  font-size: 13px;
+  opacity: 0.75;
+}
+
+.playground-id {
+  position: fixed;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-weight: 700;
+  opacity: 0.6;
+  z-index: 31;
 }
 
 .eyecam-chip-detail {

@@ -69,8 +69,8 @@ export default defineConfig(({ mode }) => {
   define: { __APP_VERSION__: JSON.stringify(gitVersion()) },
   plugins: [react(), mediapipeWasm(), ...(useHttps ? [basicSsl()] : [])],
   build: {
-    // three.js lands in a lazy chunk shared by the stage renderer (medusa3d)
-    // and the phone's shield renderer (shield3d) — neither loads eagerly
+    // three.js lands in a lazy chunk (medusaScene) used by the stage
+    // renderer (medusa3d) — it must never load eagerly
     chunkSizeWarningLimit: 700,
   },
   server: {

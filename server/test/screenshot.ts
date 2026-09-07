@@ -255,12 +255,12 @@ async function main() {
   clearInterval(medusaDriver);
   console.log('medusa captured');
 
-  // --- Medusa v2 (eye mode): fullscreen face cut + phone shield view ---
+  // --- Medusa v2 (eye mode): fullscreen face cut + phone feedback wash ---
   await page.click('.host-corner button:has-text("Lobby")');
   await sleep(400);
   await page.locator('label:has-text("eye mode") input[type=checkbox]').check();
   await sleep(250);
-  // A phone page for the shield view: reuse a socket player's identity is
+  // A phone page for the feedback view: reuse a socket player's identity is
   // not possible (tokens are per-join), so join fresh via stored creds.
   const phone = await browser.newPage({ viewport: { width: 390, height: 780 } });
   await phone.goto(`${BASE}/`);
@@ -271,8 +271,8 @@ async function main() {
   await phone.goto(`${BASE}/play`);
   await sleep(600);
   await page.click('button.start-medusa');
-  // Decline the camera on the phone (headless has none) — the shield must
-  // still render from the server's shield stream.
+  // Decline the camera on the phone (headless has none) — the feedback
+  // overlay must still render from the server's pulse stream.
   await phone.locator('.eyecam-consent button.no').click({ timeout: 8000 }).catch(() => {});
   const v2driver = setInterval(() => {
     const s = latest as MedusaSnapshot | null;
@@ -303,14 +303,14 @@ async function main() {
   }
   await sleep(1800); // past the fairness grace — tiers rise, strip populates
   await page.screenshot({ path: path.join(OUT_DIR, '6-medusa-face.png') });
-  // The shield is a lazy 3D chunk and shows only during red — make sure it
+  // The full-screen feedback wash floods the phone during red — make sure it
   // mounted and capture the phone while she's still watching.
   await phone
-    .locator('.shield-box canvas')
+    .locator('.feedback-overlay')
     .first()
     .waitFor({ timeout: 5000 })
     .catch(() => {});
-  await phone.screenshot({ path: path.join(OUT_DIR, '7-phone-shield.png') });
+  await phone.screenshot({ path: path.join(OUT_DIR, '7-phone-feedback.png') });
   // Back on green the field returns — tiers decay slowly, so the stone
   // creeping up the caught starers is visible.
   const greenAt = Date.now();

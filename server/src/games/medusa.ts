@@ -1,8 +1,7 @@
 import {
-  GZ_CAUGHT,
+  GZ_OPEN,
   GZ_CLASSIC,
   GZ_CLOSED,
-  GZ_SHIELD,
   GZ_UNKNOWN,
   MEDUSA_FINISHED,
   MEDUSA_RUNNING,
@@ -10,11 +9,10 @@ import {
   type GamePhase,
   type InputPayload,
   type MedusaCrumbleTuple,
-  type MedusaFieldMsg,
   type MedusaGazeState,
   type MedusaPlatformTuple,
   type MedusaPlayerTuple,
-  type MedusaShieldMsg,
+  type MedusaPulseMsg,
   type MedusaSnapshot,
   type MeState,
 } from '../../../shared/protocol';
@@ -35,26 +33,24 @@ const CRUMBLE_COLLAPSE_DELAY = 0.6; // s after a cracked cell is vacated
 
 // --- v2 gaze meter (eye mode) -------------------------------------------
 // Petrification is a process: her gaze fills a per-player meter, safety
-// drains it, full = statue. Only high-confidence CAUGHT frames raise the
+// drains it, full = statue. Only high-confidence eyes-OPEN frames raise the
 // stone tiers that slow you — uncertainty kills slowly but never slows.
 const RED_START_GRACE = 0.8; // meter frozen at the start of each red (fairness)
 const DROPOUT_GRACE = 0.5; // brief tracking dropouts keep the previous state
 const CLOSED_LINGER = 1.5; // eyes-closed heads drift out of frame — linger longer
 const GAZE_FRESH = 0.8; // reports older than this are UNKNOWN
-const CAUGHT_CONF = 0.6; // below this, a caught report degrades to UNKNOWN
-const FILL_CAUGHT = 1 / 1.0; // meter/s while her gaze meets open eyes
+const CAUGHT_CONF = 0.6; // below this, an eyes-open report degrades to UNKNOWN
+const FILL_OPEN = 1 / 1.0; // meter/s while her gaze meets open eyes
 const FILL_UNKNOWN = 1 / 2.5; // the camera-hider's slow death
-const DRAIN_SAFE = 1 / 1.5; // shield/closed recovery during red
+const DRAIN_SAFE = 1 / 1.5; // eyes-closed recovery during red
 const DRAIN_GREEN = 1 / 15; // slow redemption while she looks away
 const TIER_ENTER = [0.4, 0.7]; // meter thresholds that raise tiers 1, 2
 const TIER_EXIT = [0.3, 0.6]; // hysteresis exits
 const TIER_COOLDOWN_MULT = [1, 2, 4]; // hop cooldown multiplier per tier
-const SHIELD_SLOW = 2.5; // extra cooldown mult while navigating by shield in red
 const CONE_HALF = Math.PI / 4; // half-angle of her gaze cone
 const SWEEP_PERIOD = 3.2; // seconds per full sweep oscillation
 const OCCL_BUCKET = Math.PI / 90; // 2° statue-shadow buckets
-const SHIELD_EVERY = 4; // shield stream every 4th tick (5 Hz)
-const SHIELD_RADIUS = 3; // Chebyshev window the shield can see
+const PULSE_EVERY = 4; // personal state pulse every 4th tick (5 Hz)
 
 type PlayerState =
   | typeof MEDUSA_RUNNING
@@ -74,7 +70,7 @@ interface Runner {
   gzConf: number; // its confidence 0..1
   gzAt: number; // t of the latest report; -Infinity = never reported
   eff: number; // effective GZ_* after freshness/grace rules (tick-derived)
-  lastSafe: number; // last SHIELD/CLOSED actually seen
+  lastSafe: number; // last CLOSED actually seen
   lastSafeAt: number;
   unknownSince: number; // -1 while reports are flowing
   meter: number; // 0..1 death meter — full = statue
@@ -95,8 +91,7 @@ interface BotBrain {
   risk: number; // 0..1 — how far into red this bot dares to sneak hops
   eagerness: number; // probability of hopping on a given green think-tick
   // v2 gaze simulation:
-  discipline: number; // 0..1 — low = lapses into CAUGHT; <0.1 = no camera at all
-  closedStyle: boolean; // closes eyes (fast, blind) vs shield (slow, sighted)
+  discipline: number; // 0..1 — low = lapses eyes-open during red; <0.1 = no camera
   lapseUntil: number; // t until which this bot is staring at the big screen
 }
 
@@ -177,7 +172,6 @@ export class Medusa implements GameModule {
         meter: 0,
         tier: 0,
       });
-      if (!this.ctx.isBot(slot)) this.sendField(slot);
     });
     // Her eye sits past the finish; the widest angle any cell subtends sets
     // how far the gaze cone needs to sweep.
@@ -185,26 +179,6 @@ export class Medusa implements GameModule {
     this.sweepMax = Math.max(0.25, maxCorner - CONE_HALF / 2);
     this.scheduleGaze('green', this.greenDuration());
     this.interval = setInterval(() => this.tick(TICK_MS / 1000), TICK_MS);
-  }
-
-  // Static layout for the phone's shield view — sent once, never streamed.
-  private sendField(slot: number) {
-    const msg: MedusaFieldMsg = {
-      length: LENGTH,
-      lanes: this.lanes,
-      pits: [...this.pits].map((k) => [k % LENGTH, Math.floor(k / LENGTH)]),
-      crumble: [...this.crumbleStage.keys()].map((k) => [
-        k % LENGTH,
-        Math.floor(k / LENGTH),
-      ]),
-      platforms: this.platforms.map((p) => ({
-        id: p.id,
-        lane: p.lane,
-        c0: p.c0,
-        c1: p.c1,
-      })),
-    };
-    this.ctx.send(slot, 'field', msg);
   }
 
   dispose() {
@@ -269,7 +243,6 @@ export class Medusa implements GameModule {
       meter: 0,
       tier: 0,
     });
-    if (!this.ctx.isBot(slot)) this.sendField(slot);
   }
 
   input(slot: number, payload: InputPayload) {
@@ -283,7 +256,7 @@ export class Medusa implements GameModule {
     }
     if (payload.t === 'gaze') {
       if (!this.ctx.options.medusaEyes) return; // toggle off → inert
-      if (payload.s !== 0 && payload.s !== 1 && payload.s !== 2 && payload.s !== 3) return;
+      if (payload.s !== 1 && payload.s !== 2 && payload.s !== 3) return;
       runner.gz = payload.s;
       runner.gzConf = Math.max(0, Math.min(1, Number(payload.c) || 0));
       runner.gzAt = this.t;
@@ -291,13 +264,8 @@ export class Medusa implements GameModule {
     }
     if (payload.t !== 'hop') return;
     if (this.phase !== 'play' || runner.state !== MEDUSA_RUNNING) return;
-    // Stone slows you: each tier stretches the hop cooldown, and navigating
-    // by the mirrored shield during red is deliberate, careful movement.
-    const shieldSlow =
-      this.ctx.options.medusaEyes && this.gaze === 'red' && runner.eff === GZ_SHIELD
-        ? SHIELD_SLOW
-        : 1;
-    const cooldown = HOP_COOLDOWN * TIER_COOLDOWN_MULT[runner.tier] * shieldSlow;
+    // Stone slows you: each tier stretches the hop cooldown.
+    const cooldown = HOP_COOLDOWN * TIER_COOLDOWN_MULT[runner.tier];
     if (this.t - runner.lastHopAt < cooldown) return;
     runner.lastHopAt = this.t;
 
@@ -412,11 +380,11 @@ export class Medusa implements GameModule {
   // runner's grace bookkeeping and caches the result on runner.eff.
   private effState(runner: Runner): number {
     let raw = this.t - runner.gzAt > GAZE_FRESH ? GZ_UNKNOWN : runner.gz;
-    if (raw === GZ_CAUGHT && runner.gzConf < CAUGHT_CONF) raw = GZ_UNKNOWN;
+    if (raw === GZ_OPEN && runner.gzConf < CAUGHT_CONF) raw = GZ_UNKNOWN;
     let eff: number;
     if (raw !== GZ_UNKNOWN) {
       runner.unknownSince = -1;
-      if (raw === GZ_SHIELD || raw === GZ_CLOSED) {
+      if (raw === GZ_CLOSED) {
         runner.lastSafe = raw;
         runner.lastSafeAt = this.t;
       }
@@ -448,18 +416,18 @@ export class Medusa implements GameModule {
         r.meter = Math.max(0, r.meter - DRAIN_GREEN * dt); // slow redemption
       } else if (this.t - this.redSince < RED_START_GRACE) {
         // fairness: the meter holds while everyone reacts to the turn
-      } else if (eff === GZ_SHIELD || eff === GZ_CLOSED) {
+      } else if (eff === GZ_CLOSED) {
         r.meter = Math.max(0, r.meter - DRAIN_SAFE * dt);
       } else if (this.inGaze(r, dir)) {
-        r.meter += (eff === GZ_CAUGHT ? FILL_CAUGHT : FILL_UNKNOWN) * dt;
+        r.meter += (eff === GZ_OPEN ? FILL_OPEN : FILL_UNKNOWN) * dt;
         if (r.meter >= 1) {
           r.meter = 1;
           this.petrify(r);
           continue;
         }
-        // Only provable CAUGHT frames raise tiers — uncertainty kills
+        // Only provable eyes-OPEN frames raise tiers — uncertainty kills
         // slowly but never slows.
-        if (eff === GZ_CAUGHT) {
+        if (eff === GZ_OPEN) {
           while (r.tier < TIER_ENTER.length && r.meter >= TIER_ENTER[r.tier]) {
             r.tier++;
             this.ctx.buzz(r.slot, 'creep');
@@ -498,7 +466,6 @@ export class Medusa implements GameModule {
         risk: Math.random(),
         eagerness: 0.55 + Math.random() * 0.45,
         discipline: Math.random(),
-        closedStyle: Math.random() < 0.5,
         lapseUntil: 0,
       };
       this.brains.set(slot, brain);
@@ -507,9 +474,9 @@ export class Medusa implements GameModule {
     if (this.ctx.options.medusaEyes) {
       // v2: bots play by the meter's rules through the same input() path
       // phones use. Disciplined bots hold a safe state; the sloppy lapse
-      // into CAUGHT stares; a few (discipline < 0.1) have "no camera" and
+      // into open-eyed stares; a few (discipline < 0.1) have "no camera" and
       // exercise the slow death. Movement is never the crime, so they keep
-      // hopping through red — blind at full speed or by shield, slowed.
+      // hopping through red — eyes shut, blind at full speed.
       const msgs: InputPayload[] = [];
       if (brain.discipline >= 0.1) {
         if (
@@ -519,13 +486,13 @@ export class Medusa implements GameModule {
         ) {
           brain.lapseUntil = this.t + 0.5 + Math.random() * 1.5;
         }
-        const s = this.t < brain.lapseUntil ? GZ_CAUGHT : brain.closedStyle ? GZ_CLOSED : GZ_SHIELD;
-        msgs.push({ t: 'gaze', s: s as 0 | 1 | 2 | 3, c: 0.9 });
+        const s = this.t < brain.lapseUntil ? GZ_OPEN : GZ_CLOSED;
+        msgs.push({ t: 'gaze', s: s as 1 | 2 | 3, c: 0.9 });
       }
       // Bots running blind lose the line like humans do: hesitant cadence
       // and the occasional drift off the memorized route (a drift into a
       // pit just bounces — it costs time, which is the point).
-      const blind = this.gaze === 'red' && brain.closedStyle && this.t >= brain.lapseUntil;
+      const blind = this.gaze === 'red' && this.t >= brain.lapseUntil;
       const hop = this.botHop(runner, brain, blind);
       if (hop) msgs.push(hop);
       return msgs.length > 0 ? msgs : null;
@@ -702,13 +669,10 @@ export class Medusa implements GameModule {
     // v2 eye mode: the gaze meter does the petrifying, continuously.
     if (this.ctx.options.medusaEyes) {
       this.updateMeters(dt);
-      // The big screen shows only her face during red — stream each phone
-      // its little shield window (starting at turning, so the bronze fades
-      // in during the telegraph).
+      // Keep every phone certain of its own state: a small personal pulse
+      // (gaze phase, meter, tier, effective eye state) all round long.
       this.tickCount++;
-      if (this.gaze !== 'green' && this.tickCount % SHIELD_EVERY === 0) {
-        this.emitShields();
-      }
+      if (this.tickCount % PULSE_EVERY === 0) this.emitPulses();
     }
 
     // Time up: her final gaze sweeps the whole field.
@@ -727,52 +691,19 @@ export class Medusa implements GameModule {
     this.emitSnapshot();
   }
 
-  // Per-phone shield windows: own state + everything within a small
-  // Chebyshev radius. Tiny and personal — full snapshots never go to phones.
-  private emitShields() {
+  // Per-phone state pulse: the player must always know exactly what the
+  // game thinks their eyes are doing and how far the stone has crept.
+  private emitPulses() {
     const gazeCode =
       this.gaze === 'green' ? 0 : this.gaze === 'turning' ? 1 : this.gaze === 'red' ? 2 : 3;
-    const dir = round2(this.sweepDir());
     const tLeft = round1(Math.max(0, this.gazeUntil - this.t));
     for (const r of this.runners.values()) {
       if (r.state !== MEDUSA_RUNNING || this.ctx.isBot(r.slot)) continue;
-      const near: MedusaShieldMsg['near'] = [];
-      for (const o of this.runners.values()) {
-        if (o.slot === r.slot || o.state === MEDUSA_FINISHED) continue;
-        if (
-          Math.abs(o.col - r.col) <= SHIELD_RADIUS &&
-          Math.abs(o.lane - r.lane) <= SHIELD_RADIUS
-        ) {
-          near.push([o.slot, o.col, o.lane, o.state, o.tier]);
-        }
-      }
-      const pf: MedusaShieldMsg['pf'] = [];
-      for (const p of this.platforms) {
-        if (
-          Math.abs(p.lane - r.lane) <= SHIELD_RADIUS &&
-          p.c1 >= r.col - SHIELD_RADIUS &&
-          p.c0 <= r.col + SHIELD_RADIUS
-        ) {
-          pf.push([p.id, round2(p.pos)]);
-        }
-      }
-      const cr: MedusaShieldMsg['cr'] = [];
-      for (const [k, stage] of this.crumbleStage) {
-        if (stage === 0) continue;
-        const c = k % LENGTH;
-        const l = Math.floor(k / LENGTH);
-        if (Math.abs(c - r.col) <= SHIELD_RADIUS && Math.abs(l - r.lane) <= SHIELD_RADIUS) {
-          cr.push([c, l, stage]);
-        }
-      }
-      const msg: MedusaShieldMsg = {
-        g: [gazeCode, dir, tLeft],
+      const msg: MedusaPulseMsg = {
+        g: [gazeCode, tLeft],
         me: [r.col, r.lane, Math.round(r.meter * 100), r.tier, r.eff],
-        near,
-        pf,
-        cr,
       };
-      this.ctx.send(r.slot, 'shield', msg);
+      this.ctx.send(r.slot, 'pulse', msg);
     }
   }
 

@@ -22,7 +22,7 @@ export interface GameCtx {
   emitStage(snapshot: StageSnapshot): void;
   emitMe(slot: number): void; // room re-sends 'me' built from game.personal()
   buzz(slot: number, type: BuzzType): void;
-  // game-specific event straight to one phone (e.g. Medusa 'field'/'shield')
+  // game-specific event straight to one phone (e.g. Medusa 'pulse')
   send(slot: number, event: string, data: unknown): void;
 }
 
