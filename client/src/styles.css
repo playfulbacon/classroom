@@ -504,6 +504,21 @@ input {
   white-space: normal;
 }
 
+.debug-toggle {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  left: 8px;
+  z-index: 61;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid #2a3155;
+  background: rgba(6, 8, 18, 0.8);
+  font-size: 17px;
+  line-height: 1;
+  padding: 0;
+}
+
 .debug-panel {
   position: fixed;
   left: 8px;

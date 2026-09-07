@@ -422,13 +422,26 @@ export function Play() {
   const colorsRef = useRef(new Map<number, string>());
   const lastMeterRef = useRef(0);
   const dbgRef = useRef<Record<string, string>>({});
-  const [debugOn] = useState(() => {
+  const [debugOn, setDebugOn] = useState(() => {
     try {
-      return new URLSearchParams(window.location.search).has('debug');
+      return (
+        new URLSearchParams(window.location.search).has('debug') ||
+        localStorage.getItem('ca-debug') === '1'
+      );
     } catch {
       return false;
     }
   });
+  const toggleDebug = () => {
+    setDebugOn((v) => {
+      try {
+        localStorage.setItem('ca-debug', v ? '0' : '1');
+      } catch {
+        // fine
+      }
+      return !v;
+    });
+  };
   const [connected, setConnected] = useState(socket.connected);
   const [joinError, setJoinError] = useState('');
 
@@ -764,6 +777,14 @@ export function Play() {
         )}
         {me.eyeMode && <MedusaGazeCam dbg={debugOn ? dbgRef : undefined} />}
         {debugOn && <DebugPanel dbgRef={dbgRef} />}
+        <button
+          className="debug-toggle"
+          style={{ opacity: debugOn ? 1 : 0.45 }}
+          onClick={toggleDebug}
+          aria-label="Toggle debug overlay"
+        >
+          🐞
+        </button>
         <div className="controller-hud">
           <div className="big-num" style={{ opacity: 0.25 }}>{num}</div>
           <div className="hint">
