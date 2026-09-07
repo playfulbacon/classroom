@@ -3,6 +3,7 @@ import { cp } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
+import basicSsl from '@vitejs/plugin-basic-ssl';
 import react from '@vitejs/plugin-react';
 
 // Serve/copy the MediaPipe wasm bundles from node_modules (~34MB — far too
@@ -41,8 +42,15 @@ function mediapipeWasm(): Plugin {
   };
 }
 
+// HTTPS=1 serves dev over https with a self-signed cert. Phones only expose
+// the camera to secure pages, so Medusa's eye mode over LAN needs this: the
+// stage QR then encodes an https:// URL, and each phone accepts the
+// certificate warning once. Plain `npm run dev` stays http for everything
+// else.
+const useHttps = !!process.env.HTTPS;
+
 export default defineConfig({
-  plugins: [react(), mediapipeWasm()],
+  plugins: [react(), mediapipeWasm(), ...(useHttps ? [basicSsl()] : [])],
   build: {
     // three.js lands in a lazy chunk shared by the stage renderer (medusa3d)
     // and the phone's shield renderer (shield3d) — neither loads eagerly

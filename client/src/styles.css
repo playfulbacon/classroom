@@ -588,6 +588,12 @@ input {
   font-size: 15px;
 }
 
+.https-warn {
+  font-size: 12px;
+  color: #ffe066;
+  cursor: help;
+}
+
 .bot-controls {
   display: flex;
   align-items: center;

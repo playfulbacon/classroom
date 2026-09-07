@@ -112,6 +112,18 @@ For phones on the same network, use the LAN URL Vite prints (e.g.
 `http://192.168.x.x:5173`) — the QR code on the stage encodes whatever host the
 stage page was opened on.
 
+**Eye mode over LAN needs HTTPS** (browsers only expose the camera to secure
+pages — plain-http LAN pages get "no mediaDevices API" no matter what you
+allow). Run:
+
+```bash
+npm run dev:https   # dev servers with a self-signed certificate
+```
+
+then open the stage at `https://<your-lan-ip>:5173/stage` — the QR now encodes
+an `https://` link, and each phone just accepts the certificate warning once.
+(`localhost` on the laptop itself is always fine without this.)
+
 ## Production
 
 ```bash

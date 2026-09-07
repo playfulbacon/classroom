@@ -368,6 +368,13 @@ export function Stage() {
               />
               👁 eye mode
             </label>
+            {room.options.medusaEyes &&
+              location.protocol === 'http:' &&
+              location.hostname !== 'localhost' && (
+                <span className="https-warn" title="Browsers only expose the camera to secure pages. Start with `npm run dev:https` (or deploy over HTTPS) so the QR encodes an https:// link.">
+                  ⚠ phones need https for the camera
+                </span>
+              )}
             <div className="bot-controls">
               <button
                 onClick={() => socket.emit('host:bots', { delta: -1 })}
