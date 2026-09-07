@@ -42,14 +42,15 @@ function mediapipeWasm(): Plugin {
   };
 }
 
-// HTTPS=1 serves dev over https with a self-signed cert. Phones only expose
-// the camera to secure pages, so Medusa's eye mode over LAN needs this: the
-// stage QR then encodes an https:// URL, and each phone accepts the
-// certificate warning once. Plain `npm run dev` stays http for everything
-// else.
-const useHttps = !!process.env.HTTPS;
-
-export default defineConfig({
+// `vite --mode https` (via `npm run dev:https` at the root) serves dev over
+// https with a self-signed cert. Phones only expose the camera to secure
+// pages, so Medusa's eye mode over LAN needs this: the stage QR then encodes
+// an https:// URL, and each phone accepts the certificate warning once.
+// Plain `npm run dev` stays http for everything else. (--mode instead of an
+// env var so the script works on Windows too.)
+export default defineConfig(({ mode }) => {
+  const useHttps = mode === 'https' || !!process.env.HTTPS;
+  return {
   plugins: [react(), mediapipeWasm(), ...(useHttps ? [basicSsl()] : [])],
   build: {
     // three.js lands in a lazy chunk shared by the stage renderer (medusa3d)
@@ -58,6 +59,9 @@ export default defineConfig({
   },
   server: {
     host: true,
+    // `npm run dev:tunnel` fronts the dev server with a Cloudflare quick
+    // tunnel so phones get a real https URL (cameras need secure pages).
+    allowedHosts: ['.trycloudflare.com'],
     proxy: {
       '/socket.io': {
         target: 'http://localhost:3001',
@@ -68,4 +72,5 @@ export default defineConfig({
       },
     },
   },
+  };
 });

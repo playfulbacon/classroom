@@ -7,7 +7,8 @@
   ],
   "scripts": {
     "dev": "concurrently -n server,client -c blue,green \"npm -w server run dev\" \"npm -w client run dev\"",
-    "dev:https": "HTTPS=1 npm run dev",
+    "dev:https": "concurrently -n server,client -c blue,green \"npm -w server run dev\" \"npm -w client run dev -- --mode https\"",
+    "dev:tunnel": "concurrently -n game,tunnel -c green,magenta \"npm run dev\" \"npx -y cloudflared tunnel --url http://localhost:5173\"",
     "build": "npm -w client run build",
     "start": "npm -w server run start",
     "typecheck": "npm -w server run typecheck && npm -w client run typecheck",
