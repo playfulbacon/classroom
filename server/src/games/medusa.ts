@@ -500,8 +500,20 @@ export class Medusa implements GameModule {
         // fairness: the meter holds while everyone reacts to the turn
       } else if (eff === GZ_CLOSED) {
         r.meter = Math.max(0, r.meter - DRAIN_SAFE * dt);
+      } else if (eff === GZ_UNKNOWN) {
+        // Hiding from the camera cheats the SYSTEM, not her eyes — the slow
+        // death fills during every red no matter where her cone points or
+        // what statues stand in the way. No dead-camera safe spots.
+        r.meter += FILL_UNKNOWN * dt;
+        if (r.meter >= 1) {
+          r.meter = 1;
+          this.petrify(r);
+          continue;
+        }
       } else if (this.inGaze(r, dir)) {
-        r.meter += (eff === GZ_OPEN ? FILL_OPEN : FILL_UNKNOWN) * dt;
+        // Provably OPEN eyes are caught only when her gaze actually meets
+        // them — the sweeping cone and statue cover stay meaningful.
+        r.meter += FILL_OPEN * dt;
         if (r.meter >= 1) {
           r.meter = 1;
           this.petrify(r);
@@ -509,15 +521,13 @@ export class Medusa implements GameModule {
         }
         // Only provable eyes-OPEN frames raise tiers — uncertainty kills
         // slowly but never slows.
-        if (eff === GZ_OPEN) {
-          while (r.tier < TIER_ENTER.length && r.meter >= TIER_ENTER[r.tier]) {
-            r.tier++;
-            this.ctx.buzz(r.slot, 'creep');
-            this.ctx.emitMe(r.slot);
-          }
+        while (r.tier < TIER_ENTER.length && r.meter >= TIER_ENTER[r.tier]) {
+          r.tier++;
+          this.ctx.buzz(r.slot, 'creep');
+          this.ctx.emitMe(r.slot);
         }
       }
-      // else: unsafe but out of her cone / behind a statue — the meter holds.
+      // else: eyes open but out of her cone / behind a statue — holds.
       while (r.tier > 0 && r.meter < TIER_EXIT[r.tier - 1]) {
         r.tier--;
         this.ctx.emitMe(r.slot);
@@ -739,9 +749,11 @@ export class Medusa implements GameModule {
         this.scheduleGaze('red', 2 + Math.random() * 2.5);
       } else if (this.gaze === 'red') {
         this.scheduleGaze('returning', TURN_TIME);
+        // The moment her gaze drops is the moment eyes may open — buzz it
+        // RIGHT NOW, not at green: eyes-closed players are waiting for this.
+        this.buzzRunners('clear');
       } else {
         this.scheduleGaze('green', this.greenDuration());
-        this.buzzRunners('clear'); // she's turned away — eyes open, run
       }
     }
 

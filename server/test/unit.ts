@@ -671,6 +671,20 @@ console.log('unit: medusa crumbling ground OK');
     assert.equal(r.state, 0);
   }
 
+  // (g2) …but hiding from the camera is never covered: UNKNOWN fills
+  // through statues and outside her cone alike — no dead-camera safe spots.
+  {
+    const { game, internals } = makeMedusa(3, true);
+    const cover = place(internals, 2, 18);
+    cover.state = 1; // same hand-placed statue on the sight line
+    internals.shadowDirty = true;
+    const r = place(internals, 1, 10);
+    holdRed(internals, 10);
+    for (let i = 0; i < 20; i++) internals.tick(1 / 20); // 1s, no reports ever
+    assert.ok(r.meter > 0.3, `slow death ignores statue cover (meter ${r.meter})`);
+    void game;
+  }
+
   // (h) Movement is never the fail condition in v2: a caught runner may
   // still hop during deep red — the meter is what kills, not the hop.
   {

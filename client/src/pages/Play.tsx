@@ -602,7 +602,9 @@ const BUZZ_PATTERNS: Record<BuzzType, number[]> = {
   locked: [60, 50, 60, 50, 220],
   creep: [70, 40, 70], // the stone crept up a tier
   warn: [110, 60, 110, 60, 200], // she's about to turn — SHUT YOUR EYES
-  clear: [45, 45, 45], // she's turned away — eyes open, run
+  // She's turning back — OPEN YOUR EYES. Felt through closed eyes, so it's
+  // a firm double-tap, clearly different from the warn triple.
+  clear: [80, 60, 80],
 };
 
 export function Play() {
