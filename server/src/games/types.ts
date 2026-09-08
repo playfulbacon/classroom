@@ -29,6 +29,9 @@ export interface GameCtx {
 export interface GameModule {
   readonly id: GameId;
   start(): void;
+  // Stage signal: the narrated intro finished — begin the countdown.
+  // Only games with an 'intro' phase implement it.
+  introDone?(): void;
   dispose(): void;
   input(slot: number, payload: InputPayload): void;
   // called when a new player joins mid-round

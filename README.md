@@ -44,13 +44,15 @@ deadly** — hop into one and it swallows you (🕳 fallen, out of the
 round), whatever the light and whatever your eyes are doing; only the
 field edge just bounces:
 
-- **Pits** — open holes; a hop in is the end of your round.
 - **Chasms** span the whole field and are crossed on **ferry platforms**
   that shuttle between the banks — board only when one is actually
   docked (hop early and it's open water), ride it across (petrified
   passengers keep ferrying forever), hop off on the far side.
-- **Crumbling ground** cracks underfoot and collapses into a pit
-  shortly after you leave it — a fresh hole for whoever was following.
+- **Crumbling ground** — exactly three cells, spaced evenly along each
+  ground segment between the chasms. They crack underfoot and collapse
+  into a single pit shortly after you leave — a fresh hole for whoever
+  was following. Fields start with no single pits at all; every single
+  pit on the field is the scar of someone's crossing.
 
 In classic mode (no cameras), any hop while she watches turns you to
 stone where you stand — a grace window forgives taps already in flight on
@@ -88,11 +90,24 @@ playground** — a safe sandbox showing exactly what the sensor sees, with
 a demo meter and a mock petrify, so every player trusts the blink
 detection before the round starts.
 
-Detection runs entirely on the phone (MediaPipe face landmarks, blink
-only); **video never leaves the device** — only a tiny open/closed state
-code goes to the server. Players get a one-tap consent card first. Note:
-browsers only expose the camera on **HTTPS or localhost**, so eye mode
+**Camera access is part of joining**: the mobile join flow gates on the
+front camera — nobody enters the room until it's granted (the gate
+explains why and retries on failure). Detection runs entirely on the
+phone (MediaPipe face landmarks, blink only); **video never leaves the
+device** — only a tiny open/closed state code goes to the server. Note:
+browsers only expose the camera on **HTTPS or localhost**, so joining
 needs a deployed (or tunneled) HTTPS URL when phones join over LAN.
+
+Starting Medusa starts a **series of rounds**. The first round opens
+with a **narrated intro**: the rules appear over the visible field
+while a generated voice reads them ("Tap and swipe on your phone to
+race to the finish line… close your eyes or you'll turn to stone!"), a
+beat of silence, then the voice counts down "3, 2, 1, GO!". A round
+ends when every player has finished or been eliminated (or time runs
+out); finishers earn **10, 8, 6, … points** by placement, the stage
+shows the **series leaderboard**, and the next round starts itself 3
+seconds later — no intro, straight to the spoken countdown. The teacher
+ends the series from the Lobby button.
 
 ### 🧱 Human Tetris
 A co-op crowd game on the same 3D stage as Medusa, with the same avatars.

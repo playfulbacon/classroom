@@ -486,9 +486,15 @@ async function main() {
   });
   bots[2].socket.on('snapshot', () => fail('a phone received a stage snapshot'));
   stage.emit('host:start', { game: 'medusa', options: { medusaEyes: true } });
-  await waitFor('medusa play phase', 8000, () =>
-    latestSnapshot?.kind === 'medusa' && latestSnapshot.phase === 'play' ? true : null,
-  );
+  // The narrated intro waits for the stage; this headless stage skips it.
+  await waitFor('medusa play phase', 12000, () => {
+    if (latestSnapshot?.kind !== 'medusa') return null;
+    if (latestSnapshot.phase === 'intro') {
+      stage.emit('host:intro-done');
+      return null;
+    }
+    return latestSnapshot.phase === 'play' ? true : null;
+  });
   const med0 = latestSnapshot as unknown as MedusaSnapshot;
   console.log(
     `medusa: field ${med0.length}x${med0.lanes} — ${med0.pits.length} pit cells, ` +
@@ -896,6 +902,8 @@ async function main() {
   // green, freeze on red (mostly), and at least someone escapes.
   stage2.emit('host:start', { game: 'medusa', options: { medusaEyes: false } });
   const botMedusa = await waitFor('bots-only medusa round to end', 110000, () => {
+    const cur = latestSnapshot as MedusaSnapshot | null;
+    if (cur?.kind === 'medusa' && cur.phase === 'intro') stage2.emit('host:intro-done');
     const s = snap2 as MedusaSnapshot | null;
     return s?.kind === 'medusa' && s.phase === 'over' ? s : null;
   });
@@ -904,6 +912,9 @@ async function main() {
   console.log(
     `bots: medusa round complete — ${botMedusa.finished.length} escaped, ${botStones} statues`,
   );
+  // Medusa is a self-restarting series now — stop it so the room doesn't
+  // keep simulating rounds in the background for the rest of the run.
+  stage2.emit('host:lobby');
 
   // ...and hold a Human Tetris crowd together unaided: the fake players
   // must clear at least two rounds before the wall wins.

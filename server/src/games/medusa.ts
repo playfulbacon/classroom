@@ -22,6 +22,15 @@ import { generateField, type MedusaField } from './medusaField';
 
 const TICK_MS = 1000 / 20;
 const COUNTDOWN = 3;
+// The stage narrates the rules over the visible field, then signals
+// 'host:intro-done'; this cap only exists so a room with no stage attached
+// still gets a round. It must be comfortably longer than the slowest voice
+// reading the line — firing mid-speech would cut the narrator off.
+const INTRO_FALLBACK = 30;
+const OVER_BREAK = 3; // seconds of leaderboard between rounds of a series
+// Finish-line points per placement: 10, 8, 6, … (never below 0).
+const POINTS_FIRST = 10;
+const POINTS_STEP = 2;
 const TIME_LIMIT = 90; // seconds; at timeout Medusa's final gaze petrifies everyone
 const LENGTH = 24; // columns along the race axis; last column is the finish
 const GRACE = 0.3; // classic: seconds after red locks during which hops are forgiven
@@ -95,6 +104,7 @@ interface BotBrain {
   // v2 gaze simulation:
   discipline: number; // 0..1 — low = lapses eyes-open during red; <0.1 = no camera
   lapseUntil: number; // t until which this bot is staring at the big screen
+  timid: boolean; // eye mode: freezes whenever her gaze is up (many kids do)
 }
 
 export class Medusa implements GameModule {
@@ -109,8 +119,15 @@ export class Medusa implements GameModule {
   private platforms: Platform[] = [];
   private crumbleStage = new Map<number, 0 | 1 | 2>(); // every crumble cell
   private crumbleVacatedAt = new Map<number, number>(); // cracked → empty since t
-  private phase: GamePhase = 'countdown';
+  private phase: GamePhase = 'intro';
   private countdown = COUNTDOWN;
+  private introLeft = INTRO_FALLBACK;
+  // Starting Medusa starts a SERIES: each round ends when everyone has
+  // finished or been eliminated, the leaderboard shows for a beat, then the
+  // next round starts automatically (no intro after the first).
+  private round = 1;
+  private readonly points = new Map<number, number>(); // slot → series total
+  private overLeft = 0; // seconds of leaderboard before the next round
   private t = 0;
   private gaze: MedusaGazeState = 'green';
   private gazeUntil = 0; // t at which the current gaze state ends
@@ -134,6 +151,14 @@ export class Medusa implements GameModule {
   }
 
   start() {
+    this.setupRound();
+    this.phase = 'intro'; // narrated rules — first round of the series only
+    this.interval = setInterval(() => this.tick(TICK_MS / 1000), TICK_MS);
+  }
+
+  // Everything a single round needs, fresh: field, runners, gaze schedule.
+  // Series state (points, round number, bot brains) survives.
+  private setupRound() {
     const slots = this.ctx
       .slots()
       .map((s) => s.slot)
@@ -144,6 +169,15 @@ export class Medusa implements GameModule {
     this.startCols = Math.max(2, Math.ceil(slots.length / this.lanes / 2));
     this.field = generateField(LENGTH, this.lanes, this.startCols);
     this.pits = this.field.pits;
+    this.runners.clear();
+    this.crumbleStage.clear();
+    this.crumbleVacatedAt.clear();
+    this.finished = [];
+    this.pings = [];
+    this.t = 0;
+    this.redSince = 0;
+    this.shadow = null;
+    this.shadowDirty = true;
     for (const k of this.field.crumble) this.crumbleStage.set(k, 0);
     this.platforms = this.field.platforms.map((p) => ({
       id: p.id,
@@ -180,7 +214,29 @@ export class Medusa implements GameModule {
     const maxCorner = Math.atan2((this.lanes - 1) / 2, 2.6);
     this.sweepMax = Math.max(0.25, maxCorner - CONE_HALF / 2);
     this.scheduleGaze('green', this.greenDuration());
-    this.interval = setInterval(() => this.tick(TICK_MS / 1000), TICK_MS);
+  }
+
+  // The round is decided (everyone finished or eliminated, or time ran
+  // out): award finish-line points and hold the leaderboard for a beat.
+  private endRound() {
+    if (this.phase === 'over') return;
+    this.phase = 'over';
+    this.overLeft = OVER_BREAK;
+    this.finished.forEach((slot, rank) => {
+      const pts = Math.max(0, POINTS_FIRST - POINTS_STEP * rank);
+      this.points.set(slot, (this.points.get(slot) ?? 0) + pts);
+    });
+    for (const r of this.runners.values()) this.ctx.emitMe(r.slot);
+  }
+
+  // The next round of the series: fresh field, everyone back at the start,
+  // straight to the countdown — the narrated intro plays only once.
+  private newRound() {
+    this.round++;
+    this.setupRound();
+    this.phase = 'countdown';
+    this.countdown = COUNTDOWN;
+    for (const r of this.runners.values()) this.ctx.emitMe(r.slot);
   }
 
   dispose() {
@@ -444,8 +500,20 @@ export class Medusa implements GameModule {
         // fairness: the meter holds while everyone reacts to the turn
       } else if (eff === GZ_CLOSED) {
         r.meter = Math.max(0, r.meter - DRAIN_SAFE * dt);
+      } else if (eff === GZ_UNKNOWN) {
+        // Hiding from the camera cheats the SYSTEM, not her eyes — the slow
+        // death fills during every red no matter where her cone points or
+        // what statues stand in the way. No dead-camera safe spots.
+        r.meter += FILL_UNKNOWN * dt;
+        if (r.meter >= 1) {
+          r.meter = 1;
+          this.petrify(r);
+          continue;
+        }
       } else if (this.inGaze(r, dir)) {
-        r.meter += (eff === GZ_OPEN ? FILL_OPEN : FILL_UNKNOWN) * dt;
+        // Provably OPEN eyes are caught only when her gaze actually meets
+        // them — the sweeping cone and statue cover stay meaningful.
+        r.meter += FILL_OPEN * dt;
         if (r.meter >= 1) {
           r.meter = 1;
           this.petrify(r);
@@ -453,15 +521,13 @@ export class Medusa implements GameModule {
         }
         // Only provable eyes-OPEN frames raise tiers — uncertainty kills
         // slowly but never slows.
-        if (eff === GZ_OPEN) {
-          while (r.tier < TIER_ENTER.length && r.meter >= TIER_ENTER[r.tier]) {
-            r.tier++;
-            this.ctx.buzz(r.slot, 'creep');
-            this.ctx.emitMe(r.slot);
-          }
+        while (r.tier < TIER_ENTER.length && r.meter >= TIER_ENTER[r.tier]) {
+          r.tier++;
+          this.ctx.buzz(r.slot, 'creep');
+          this.ctx.emitMe(r.slot);
         }
       }
-      // else: unsafe but out of her cone / behind a statue — the meter holds.
+      // else: eyes open but out of her cone / behind a statue — holds.
       while (r.tier > 0 && r.meter < TIER_EXIT[r.tier - 1]) {
         r.tier--;
         this.ctx.emitMe(r.slot);
@@ -474,8 +540,7 @@ export class Medusa implements GameModule {
     for (const r of this.runners.values()) {
       if (r.state === MEDUSA_RUNNING) return;
     }
-    this.phase = 'over';
-    for (const r of this.runners.values()) this.ctx.emitMe(r.slot);
+    this.endRound();
   }
 
   // Fake-player AI: sprint on green, freeze when she turns (with human-like
@@ -488,11 +553,14 @@ export class Medusa implements GameModule {
     let brain = this.brains.get(slot);
     if (!brain) {
       brain = {
-        reaction: 0.15 + Math.random() * 0.35,
+        reaction: 0.25 + Math.random() * 0.5,
         risk: Math.random(),
-        eagerness: 0.55 + Math.random() * 0.45,
+        // Kids on phones are not metronomes: bots amble rather than sprint,
+        // so humans can actually place.
+        eagerness: 0.3 + Math.random() * 0.35,
         discipline: Math.random(),
         lapseUntil: 0,
+        timid: Math.random() < 0.4,
       };
       this.brains.set(slot, brain);
     }
@@ -515,10 +583,12 @@ export class Medusa implements GameModule {
         const s = this.t < brain.lapseUntil ? GZ_OPEN : GZ_CLOSED;
         msgs.push({ t: 'gaze', s: s as 1 | 2 | 3, c: 0.9 });
       }
-      // Bots running blind lose the line like humans do: hesitant cadence
-      // and the occasional drift off the memorized route (a drift into a
-      // pit just bounces — it costs time, which is the point).
-      const blind = this.gaze === 'red' && this.t >= brain.lapseUntil;
+      // While her gaze is up, bots are properly handicapped: the timid
+      // 40% freeze outright until green (eyes shut, waiting it out), and
+      // the rest crawl blind — hesitant cadence, frequent drift off the
+      // memorized route. Nobody plays red like it's green.
+      if (brain.timid && this.gaze !== 'green') return msgs.length > 0 ? msgs : null;
+      const blind = this.gaze !== 'green' && this.t >= brain.lapseUntil;
       const hop = this.botHop(runner, brain, blind);
       if (hop) msgs.push(hop);
       return msgs.length > 0 ? msgs : null;
@@ -545,8 +615,8 @@ export class Medusa implements GameModule {
     if (runner.ride !== null) {
       return this.passable(runner.col + 1, runner.lane) ? { t: 'hop', d: 'f' } : null;
     }
-    if (Math.random() > brain.eagerness * (blind ? 0.3 : 1)) return null;
-    if (blind && Math.random() < 0.35) {
+    if (Math.random() > brain.eagerness * (blind ? 0.12 : 1)) return null;
+    if (blind && Math.random() < 0.45) {
       const dirs = ['f', 'f', 'l', 'r'] as const;
       const d = dirs[Math.floor(Math.random() * dirs.length)];
       const tc = runner.col + (d === 'f' ? 1 : 0);
@@ -632,7 +702,22 @@ export class Medusa implements GameModule {
     return me;
   }
 
+  // The stage finished narrating the intro (plus its beat of silence):
+  // start the countdown. Ignored outside the intro phase.
+  introDone() {
+    if (this.phase === 'intro') {
+      this.phase = 'countdown';
+      this.introLeft = 0;
+    }
+  }
+
   private tick(dt: number) {
+    if (this.phase === 'intro') {
+      this.introLeft -= dt;
+      if (this.introLeft <= 0) this.introDone();
+      this.emitSnapshot();
+      return;
+    }
     if (this.phase === 'countdown') {
       this.countdown -= dt;
       if (this.countdown <= 0) {
@@ -644,6 +729,9 @@ export class Medusa implements GameModule {
       return;
     }
     if (this.phase === 'over') {
+      // Leaderboard beat, then the next round of the series starts itself.
+      this.overLeft -= dt;
+      if (this.overLeft <= 0) this.newRound();
       this.emitSnapshot();
       return;
     }
@@ -661,9 +749,11 @@ export class Medusa implements GameModule {
         this.scheduleGaze('red', 2 + Math.random() * 2.5);
       } else if (this.gaze === 'red') {
         this.scheduleGaze('returning', TURN_TIME);
+        // The moment her gaze drops is the moment eyes may open — buzz it
+        // RIGHT NOW, not at green: eyes-closed players are waiting for this.
+        this.buzzRunners('clear');
       } else {
         this.scheduleGaze('green', this.greenDuration());
-        this.buzzRunners('clear'); // she's turned away — eyes open, run
       }
     }
 
@@ -722,11 +812,9 @@ export class Medusa implements GameModule {
         if (r.state === MEDUSA_RUNNING) {
           r.state = MEDUSA_STONE;
           this.ctx.buzz(r.slot, 'eliminated');
-          this.ctx.emitMe(r.slot);
         }
       }
-      this.phase = 'over';
-      for (const r of this.runners.values()) this.ctx.emitMe(r.slot);
+      this.endRound();
     }
 
     this.emitSnapshot();
@@ -770,10 +858,18 @@ export class Medusa implements GameModule {
         }
       }
     }
+    // Series scores: every current player, sorted by points (desc), so the
+    // stage can draw the leaderboard without bookkeeping of its own.
+    const scores: [number, number][] = [...this.runners.keys()]
+      .map((slot): [number, number] => [slot, this.points.get(slot) ?? 0])
+      .sort((a, b) => b[1] - a[1]);
     const snapshot: MedusaSnapshot = {
       kind: 'medusa',
       phase: this.phase,
-      countdown: Math.ceil(this.countdown),
+      // During the leaderboard beat this carries seconds until the next round.
+      countdown: Math.ceil(this.phase === 'over' ? this.overLeft : this.countdown),
+      round: this.round,
+      scores,
       t: round1(this.t),
       timeLimit: TIME_LIMIT,
       length: LENGTH,

@@ -37,8 +37,15 @@ const CLOSE_AT = 0.55; // blink score to flip open → closed
 const OPEN_AT = 0.4; // blink score to flip closed → open (hysteresis)
 const AGREE_FRAMES = 2; // consecutive frames before a state change commits
 
+// Progress stages, so the UI can distinguish "waiting for the permission
+// prompt" from "camera granted, sensor model still loading". At the 'model'
+// stage the live <video> is handed out early — the feed can be shown while
+// the landmark model downloads and warms up.
+export type GazeProgress = 'camera' | 'model';
+
 export async function startGazeTracking(
   onState: (s: GazeState) => void,
+  onProgress?: (stage: GazeProgress, video?: HTMLVideoElement) => void,
 ): Promise<GazeTracker | GazeFailure> {
   if (!navigator.mediaDevices?.getUserMedia) {
     return {
@@ -46,6 +53,7 @@ export async function startGazeTracking(
       detail: 'no mediaDevices API — the camera needs HTTPS or localhost',
     };
   }
+  onProgress?.('camera');
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -61,6 +69,23 @@ export async function startGazeTracking(
     const e = err as DOMException;
     return { error: 'denied', detail: `getUserMedia ${e.name}: ${e.message}` };
   }
+
+  // Camera granted: get the self-view live immediately, then load the model.
+  const video = document.createElement('video');
+  video.srcObject = stream;
+  video.muted = true;
+  video.playsInline = true;
+  video.style.transform = 'scaleX(-1)'; // mirror the self-view
+  try {
+    await video.play();
+  } catch (err) {
+    for (const track of stream.getTracks()) track.stop();
+    return {
+      error: 'unsupported',
+      detail: `video.play failed: ${(err as Error).message?.slice(0, 120)}`,
+    };
+  }
+  onProgress?.('model', video);
 
   let landmarker: FaceLandmarker;
   try {
@@ -78,25 +103,10 @@ export async function startGazeTracking(
     }
   } catch (err) {
     for (const track of stream.getTracks()) track.stop();
+    video.srcObject = null;
     return {
       error: 'unsupported',
       detail: `FaceLandmarker init failed: ${(err as Error).message?.slice(0, 120)}`,
-    };
-  }
-
-  const video = document.createElement('video');
-  video.srcObject = stream;
-  video.muted = true;
-  video.playsInline = true;
-  video.style.transform = 'scaleX(-1)'; // mirror the self-view
-  try {
-    await video.play();
-  } catch (err) {
-    for (const track of stream.getTracks()) track.stop();
-    landmarker.close();
-    return {
-      error: 'unsupported',
-      detail: `video.play failed: ${(err as Error).message?.slice(0, 120)}`,
     };
   }
 
@@ -130,10 +140,12 @@ export async function startGazeTracking(
     return { s: 2, c: Math.min(1, (CLOSE_AT - blink) / CLOSE_AT + 0.4) };
   };
 
+  let lastFrameAt = performance.now();
   const loop = () => {
     if (stopped) return;
     if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
       lastVideoTime = video.currentTime;
+      lastFrameAt = performance.now();
       try {
         const { s, c } = classify();
         if (s !== committed) {
@@ -156,6 +168,19 @@ export async function startGazeTracking(
       } catch {
         // a single bad frame is not worth crashing the loop over
       }
+    } else if (performance.now() - lastFrameAt > 1200) {
+      // The camera stalled — mobile browsers pause a <video> that leaves
+      // the DOM or when the tab backgrounds. NEVER keep reporting the last
+      // seen state as if it were live: commit UNKNOWN, and try to revive.
+      if (committed !== 3) {
+        committed = 3;
+        candidate = null;
+        agree = 0;
+        onState({ s: 3, c: 1 });
+      }
+      debug.face = 'STALLED — reviving';
+      if (video.paused) void video.play().catch(() => {});
+      lastFrameAt = performance.now() - 600; // retry revival ~every 0.6s
     }
     setTimeout(loop, 66); // ~15fps is plenty for eyelids
   };

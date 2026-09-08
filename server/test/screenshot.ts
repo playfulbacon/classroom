@@ -34,19 +34,26 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// The join flow requires a camera now, so the phone page runs against
+// Chromium's fake camera (auto-granted, synthetic video feed).
+const FAKE_CAM_ARGS = [
+  '--use-fake-ui-for-media-stream',
+  '--use-fake-device-for-media-stream',
+];
+
 async function launchBrowser(): Promise<Browser> {
   const explicit = process.env.CHROMIUM_PATH;
-  if (explicit) return chromium.launch({ executablePath: explicit });
+  if (explicit) return chromium.launch({ executablePath: explicit, args: FAKE_CAM_ARGS });
 
   const containerChromium = '/opt/pw-browsers/chromium';
   if (existsSync(containerChromium)) {
-    return chromium.launch({ executablePath: containerChromium });
+    return chromium.launch({ executablePath: containerChromium, args: FAKE_CAM_ARGS });
   }
 
   const errors: string[] = [];
   for (const channel of ['chrome', 'msedge'] as const) {
     try {
-      return await chromium.launch({ channel });
+      return await chromium.launch({ channel, args: FAKE_CAM_ARGS });
     } catch (err) {
       errors.push(`${channel}: ${(err as Error).message.split('\n')[0]}`);
     }
@@ -228,6 +235,11 @@ async function main() {
   await page.click('.host-corner button:has-text("Lobby")');
   await sleep(400);
   await page.click('button.start-medusa');
+  // The narrated intro: capture the rules over the visible field, then skip
+  // ahead (the spy is a stage socket, so it may end the intro early).
+  await sleep(1500);
+  await page.screenshot({ path: path.join(OUT_DIR, '4-medusa-intro.png') });
+  spy.emit('host:intro-done');
   // Socket players sprint on green and dodge pits so the field spreads out.
   const medusaDriver = setInterval(() => {
     const s = latest as MedusaSnapshot | null;
@@ -275,11 +287,23 @@ async function main() {
     [code],
   );
   await phone.goto(`${BASE}/play`);
-  await sleep(600);
+  // The camera gate guards the join now; the fake-device flags make the
+  // permission grant succeed with a synthetic feed.
+  await phone.locator('button.cam-gate-btn').click({ timeout: 8000 }).catch(() => {});
+  await sleep(800);
   await page.click('button.start-medusa');
-  // Decline the camera on the phone (headless has none) — the feedback
-  // overlay must still render from the server's pulse stream.
-  await phone.locator('.eyecam-consent button.no').click({ timeout: 8000 }).catch(() => {});
+  // Skip the narrated intro for this round.
+  {
+    const introAt = Date.now();
+    while (Date.now() - introAt < 16000) {
+      const s = latest as MedusaSnapshot | null;
+      if (s?.kind === 'medusa') {
+        if (s.phase === 'intro') spy.emit('host:intro-done');
+        else break;
+      }
+      await sleep(150);
+    }
+  }
   const v2driver = setInterval(() => {
     const s = latest as MedusaSnapshot | null;
     if (!s || s.kind !== 'medusa' || s.phase !== 'play') return;

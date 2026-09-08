@@ -333,6 +333,11 @@ export class Room {
     this.botTicker = null;
   }
 
+  introDone(socket: Socket) {
+    if (!socket.data.stage) return;
+    this.game?.introDone?.();
+  }
+
   toLobby(socket: Socket) {
     if (!socket.data.stage) return;
     this.touch();

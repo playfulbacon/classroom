@@ -39,7 +39,10 @@ export interface RoomState {
 // Last One Standing
 // ---------------------------------------------------------------------------
 
-export type GamePhase = 'countdown' | 'play' | 'over';
+// 'intro' precedes the countdown where a game wants a narrated setup (only
+// Medusa uses it: the stage shows/speaks the rules over the visible field,
+// then signals 'host:intro-done' to begin the countdown).
+export type GamePhase = 'intro' | 'countdown' | 'play' | 'over';
 
 export interface LosObstacle {
   x: number;
@@ -163,7 +166,13 @@ export type MedusaCrumbleTuple = [number, number, 0 | 1 | 2];
 export interface MedusaSnapshot {
   kind: 'medusa';
   phase: GamePhase;
+  // During 'countdown' the 3-2-1; during 'over' the seconds until the next
+  // round of the series starts itself.
   countdown: number;
+  round: number; // 1-based round number within the series
+  // Series leaderboard, sorted by points desc: [slot, totalPoints]. Finish
+  // placements earn 10, 8, 6, … points per round.
+  scores: [number, number][];
   t: number; // seconds since play began
   timeLimit: number;
   length: number; // columns along the race axis

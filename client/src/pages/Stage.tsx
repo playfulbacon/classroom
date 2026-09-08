@@ -32,7 +32,11 @@ const SCENE_LOADING: Record<SceneKind, string> = {
 async function loadScene(kind: SceneKind, getRoom: () => RoomState | null): Promise<SceneRenderer> {
   if (kind === 'medusa') {
     const mod = await import('../render/medusa3d');
-    const r = mod.createMedusaRenderer(getRoom);
+    const r = mod.createMedusaRenderer(getRoom, {
+      // The stage owns the speakers: when the narrated intro (plus its
+      // beat of silence) finishes, tell the server to start the countdown.
+      onIntroDone: () => socket.emit('host:intro-done'),
+    });
     return { ...r, push: (s) => s.kind === 'medusa' && r.push(s) };
   }
   const mod = await import('../render/tetris3d');

@@ -304,9 +304,11 @@ function makeMedusa(playerCount: number, medusaEyes = false) {
 }
 
 // (a) Every generated field is traversable (independent BFS: pit cells pass
-// only on ferry-route lanes) and respects the layout invariants: crumble
-// never on the carved spine, never beside a pit or another crumble, and
-// every chasm band carries at least two ferries.
+// only on ferry-route lanes) and respects the layout invariants: pits exist
+// ONLY inside chasm bands (no scattered singles), exactly three crumble
+// cells spaced along each ground segment, crumble never in/beside a band or
+// touching another crumble, and every chasm band carries at least two
+// ferries.
 {
   const L = 24;
   const lanes = 16;
@@ -341,8 +343,20 @@ function makeMedusa(playerCount: number, medusaEyes = false) {
     }
     assert.ok(reached, `seed ${seed}: no traversable path to the finish`);
 
+    // Pits exist only inside chasm bands — no scattered single pits.
+    const inBand = (c: number) => field.chasms.some((b) => c >= b.c0 && c <= b.c1);
+    for (const k of field.pits) {
+      assert.ok(inBand(k % L), `seed ${seed}: pit at col ${k % L} outside every band`);
+    }
+    // Exactly three crumble cells per ground segment (start → band → … → finish).
+    const expected = 3 * (field.chasms.length + 1);
+    assert.equal(
+      field.crumble.size,
+      expected,
+      `seed ${seed}: ${field.crumble.size} crumble cells, expected ${expected}`,
+    );
+
     for (const k of field.crumble) {
-      assert.ok(!field.safe.has(k), `seed ${seed}: crumble on a carved safe path`);
       assert.ok(!field.pits.has(k), `seed ${seed}: crumble on a pit`);
       const c = k % L;
       const l = Math.floor(k / L);
@@ -677,6 +691,20 @@ console.log('unit: medusa crumbling ground OK');
     run(game, internals, 1, 2, 0.9, 20); // 1s of caught — but occluded
     assert.equal(r.meter, 0, 'behind a statue her gaze never lands');
     assert.equal(r.state, 0);
+  }
+
+  // (g2) …but hiding from the camera is never covered: UNKNOWN fills
+  // through statues and outside her cone alike — no dead-camera safe spots.
+  {
+    const { game, internals } = makeMedusa(3, true);
+    const cover = place(internals, 2, 18);
+    cover.state = 1; // same hand-placed statue on the sight line
+    internals.shadowDirty = true;
+    const r = place(internals, 1, 10);
+    holdRed(internals, 10);
+    for (let i = 0; i < 20; i++) internals.tick(1 / 20); // 1s, no reports ever
+    assert.ok(r.meter > 0.3, `slow death ignores statue cover (meter ${r.meter})`);
+    void game;
   }
 
   // (h) Movement is never the fail condition in v2: a caught runner may

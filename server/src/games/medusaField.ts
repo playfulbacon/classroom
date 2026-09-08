@@ -1,9 +1,10 @@
-// Medusa field generation: scattered pits, full-width chasm bands crossed by
-// ferry platforms, and crumbling ground. Nothing here is deadly — pits and
-// collapsed cells BLOCK movement; petrification is the game's only
-// elimination. Solvability is explicit: carved safe paths never receive pits
-// or crumble (the permanent spine), and a post-generation BFS verifies the
-// finish is reachable, treating band cells as passable only on platform lanes.
+// Medusa field generation. The layout is a rhythm of full-width chasm bands
+// crossed by ferry platforms, with exactly three crumbling cells spaced
+// evenly along each ground segment between them (and the start/finish
+// stretches). There are no scattered single pits — single pits only appear
+// mid-round where crumbling ground has collapsed. Pits are deadly, so the
+// flanking columns of every band stay clear and a post-generation BFS
+// verifies the finish is reachable (band cells pass only on platform lanes).
 
 export interface PlatformDef {
   id: number;
@@ -14,33 +15,17 @@ export interface PlatformDef {
 }
 
 export interface MedusaField {
-  pits: Set<number>; // cellKey — includes every chasm band cell
+  pits: Set<number>; // cellKey — every chasm band cell (nothing else)
   crumble: Set<number>; // crumble cell keys (all start intact)
   chasms: { c0: number; c1: number }[];
   platforms: PlatformDef[];
-  safe: Set<number>; // carved path cells (never pit/crumble) — used by tests
 }
 
 export function cellKey(col: number, lane: number, length: number): number {
   return lane * length + col;
 }
 
-function carveSafePaths(length: number, lanes: number): Set<number> {
-  const safe = new Set<number>();
-  const paths = 3 + Math.floor(Math.random() * 2);
-  for (let p = 0; p < paths; p++) {
-    let lane = Math.floor(Math.random() * lanes);
-    for (let col = 0; col < length; col++) {
-      safe.add(cellKey(col, lane, length));
-      lane = Math.min(lanes - 1, Math.max(0, lane + (Math.floor(Math.random() * 3) - 1)));
-      safe.add(cellKey(Math.min(col + 1, length - 1), lane, length));
-    }
-  }
-  return safe;
-}
-
 function generateOnce(length: number, lanes: number, startCols: number): MedusaField {
-  const safe = carveSafePaths(length, lanes);
   const pits = new Set<number>();
   const crumble = new Set<number>();
 
@@ -52,10 +37,13 @@ function generateOnce(length: number, lanes: number, startCols: number): MedusaF
     const width = 2 + Math.floor(Math.random() * 2);
     const center = Math.round(length * (bandCount === 1 ? 0.5 : 0.38 + b * 0.28));
     let c0 = center - Math.floor(width / 2) + Math.floor(Math.random() * 2);
-    c0 = Math.max(startCols + 2, Math.min(length - 3 - width, c0));
+    // Every ground segment (before, between, after the bands) must keep at
+    // least 3 usable columns clear of the band-flank buffer, so the three
+    // evenly spaced crumble cells always fit.
+    c0 = Math.max(startCols + 5, Math.min(length - 3 - width, c0));
     const prev = chasms[chasms.length - 1];
-    if (prev && c0 <= prev.c1 + 2) c0 = prev.c1 + 3; // >=2 solid columns between
-    const c1 = Math.min(length - 4, c0 + width - 1);
+    if (prev && c0 <= prev.c1 + 5) c0 = prev.c1 + 6;
+    const c1 = Math.min(length - 7, c0 + width - 1);
     if (c1 < c0) continue;
     chasms.push({ c0, c1 });
     for (let col = c0; col <= c1; col++) {
@@ -77,53 +65,37 @@ function generateOnce(length: number, lanes: number, startCols: number): MedusaF
       platforms.push({ id: nextId++, lane, c0: band.c0, c1: band.c1, phase: Math.random() });
     }
   }
-  const inBand = (col: number) => chasms.some((b) => col >= b.c0 && col <= b.c1);
-  // The columns flanking a chasm stay completely clear: stepping off a ferry
-  // (either direction) must never land you against a pit.
-  const besideBand = (col: number) =>
-    chasms.some((b) => col === b.c0 - 1 || col === b.c1 + 1);
-
-  // Scattered pits (blocking rocks) outside safe paths and bands.
-  for (let col = startCols + 1; col <= length - 3; col++) {
-    if (inBand(col) || besideBand(col)) continue;
-    let inCol = 0;
-    const cap = Math.floor(lanes * 0.35);
-    for (let lane = 0; lane < lanes; lane++) {
-      if (inCol >= cap) break;
-      const k = cellKey(col, lane, length);
-      if (safe.has(k)) continue;
-      if (Math.random() < 0.18) {
-        pits.add(k);
-        inCol++;
-      }
+  // Crumbling ground: exactly three cells per ground segment — the stretch
+  // before the first band, between consecutive bands, and after the last —
+  // spaced evenly along the segment's columns, each on a random lane. The
+  // columns flanking a chasm stay completely clear (stepping off a ferry
+  // must never land you against a hole), so segments end 2 columns short of
+  // every band edge.
+  let prevEnd = startCols; // the start zone itself stays clear
+  const segments: [number, number][] = [];
+  for (const band of chasms) {
+    segments.push([prevEnd + 1, band.c0 - 2]);
+    prevEnd = band.c1 + 1;
+  }
+  segments.push([prevEnd + 1, length - 3]);
+  let lastCol = -9;
+  let lastLane = -9;
+  for (const [s0, s1] of segments) {
+    const width = s1 - s0 + 1;
+    if (width <= 0) continue;
+    const count = Math.min(3, width);
+    for (let i = 0; i < count; i++) {
+      const col = s0 + Math.round(((width - 1) * i) / Math.max(1, count - 1));
+      let lane = Math.floor(Math.random() * lanes);
+      // Never orthogonally adjacent to the previous crumble cell.
+      if (Math.abs(col - lastCol) <= 1 && lane === lastLane) lane = (lane + 1) % lanes;
+      crumble.add(cellKey(col, lane, length));
+      lastCol = col;
+      lastLane = lane;
     }
   }
 
-  // Crumbling ground: walkable shortcuts that collapse behind the crowd.
-  // Never on the carved spine, never in a band, and never orthogonally
-  // adjacent to a pit or another crumble cell — a collapse can then never
-  // seal a neighboring cell's last exit.
-  for (let col = startCols + 1; col <= length - 3; col++) {
-    if (inBand(col)) continue;
-    for (let lane = 0; lane < lanes; lane++) {
-      const k = cellKey(col, lane, length);
-      if (safe.has(k) || pits.has(k)) continue;
-      const neighbors = [
-        [col + 1, lane],
-        [col - 1, lane],
-        [col, lane + 1],
-        [col, lane - 1],
-      ];
-      const badNeighbor = neighbors.some(([c, l]) => {
-        if (c < 0 || c >= length || l < 0 || l >= lanes) return false;
-        const nk = cellKey(c, l, length);
-        return pits.has(nk) || crumble.has(nk);
-      });
-      if (!badNeighbor && Math.random() < 0.08) crumble.add(k);
-    }
-  }
-
-  return { pits, crumble, chasms, platforms, safe };
+  return { pits, crumble, chasms, platforms };
 }
 
 // BFS from every start-zone cell to the finish column. Band cells count as

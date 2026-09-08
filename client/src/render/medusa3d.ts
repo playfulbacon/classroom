@@ -7,6 +7,7 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { speak } from '../speech';
 import type {
   MedusaGazeState,
   MedusaSnapshot,
@@ -55,8 +56,17 @@ export interface MedusaRenderer3D {
   dispose(): void;
 }
 
+// The spoken/on-screen intro, narrated by the stage before the countdown.
+const INTRO_EYES =
+  "Tap and swipe on your phone to race to the finish line while avoiding Medusa's gaze. " +
+  "When Medusa turns, close your eyes or you'll turn to stone!";
+const INTRO_CLASSIC =
+  "Tap and swipe on your phone to race to the finish line while avoiding Medusa's gaze. " +
+  "When Medusa turns, freeze — don't move or you'll turn to stone!";
+
 export function createMedusaRenderer(
   getRoom: () => RoomState | null,
+  opts?: { onIntroDone?: () => void },
 ): MedusaRenderer3D {
   let container: HTMLElement | null = null;
   let renderer: THREE.WebGLRenderer | null = null;
@@ -87,6 +97,9 @@ export function createMedusaRenderer(
   let lastPhase = '';
   let redFade = 0; // 0..1 vignette amount
   let finishedSeen = 0;
+  let introLine = ''; // shown on the HUD while phase === 'intro'
+  let introSpoken = false;
+  let lastCountSpoken = 0; // last countdown digit the narrator said
 
   // damped camera state
   const camCenter = new THREE.Vector3(2, 0, 8);
@@ -146,6 +159,8 @@ export function createMedusaRenderer(
     finishedSeen = 0;
     lastGaze = 'none';
     redFade = 0;
+    introSpoken = false;
+    lastCountSpoken = 0;
   }
 
   // ------------------------------------------------------------- Medusa
@@ -310,7 +325,9 @@ export function createMedusaRenderer(
 
   // --------------------------------------------------------------- push
   function push(s: MedusaSnapshot) {
-    if (s.phase === 'countdown' && lastPhase === 'over') resetRound();
+    if ((s.phase === 'intro' || s.phase === 'countdown') && lastPhase === 'over') {
+      resetRound();
+    }
     const room = getRoom();
     const colors = new Map<number, string>();
     if (room) for (const p of room.players) colors.set(p.id, p.color);
@@ -341,9 +358,26 @@ export function createMedusaRenderer(
       lastGaze = s.gaze.state;
     }
     if (s.phase !== lastPhase) {
-      if (s.phase === 'play') sfx.green();
+      if (s.phase === 'play') {
+        sfx.green();
+        void speak('GO!', { interrupt: true, rate: 1.05 });
+      }
       if (s.phase === 'over') sfx.gong();
       lastPhase = s.phase;
+    }
+    // Narrated intro: show the rules over the visible field and speak them;
+    // a beat of silence after the line, then tell the server to count down.
+    if (s.phase === 'intro' && !introSpoken) {
+      introSpoken = true;
+      introLine = s.eyesMode ? INTRO_EYES : INTRO_CLASSIC;
+      void speak(introLine, { rate: 1.02 })
+        .then(() => new Promise((r) => setTimeout(r, 1000)))
+        .then(() => opts?.onIntroDone?.());
+    }
+    // The narrator counts down with the big numbers.
+    if (s.phase === 'countdown' && s.countdown > 0 && s.countdown !== lastCountSpoken) {
+      lastCountSpoken = s.countdown;
+      void speak(String(s.countdown), { interrupt: true, rate: 1.05 });
     }
     if (s.finished.length > finishedSeen) {
       sfx.fanfare();
@@ -847,7 +881,32 @@ export function createMedusaRenderer(
     // Countdown / results.
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    if (s.phase === 'countdown' && s.countdown > 0) {
+    if (s.phase === 'intro') {
+      // The narrated rules, over the visible field.
+      ctx.fillStyle = 'rgba(8, 10, 22, 0.55)';
+      ctx.fillRect(0, h * 0.62, w, h * 0.3);
+      ctx.font = `700 ${Math.round(h * 0.042)}px system-ui`;
+      ctx.fillStyle = 'rgba(255,255,255,0.96)';
+      const wrap = (text: string, maxW: number): string[] => {
+        const out: string[] = [];
+        let line = '';
+        for (const word of text.split(' ')) {
+          const probe = line ? `${line} ${word}` : word;
+          if (ctx.measureText(probe).width > maxW && line) {
+            out.push(line);
+            line = word;
+          } else {
+            line = probe;
+          }
+        }
+        if (line) out.push(line);
+        return out;
+      };
+      const lines = wrap(introLine, w * 0.82);
+      lines.forEach((ln, i) => {
+        ctx.fillText(ln, w / 2, h * 0.7 + i * h * 0.055);
+      });
+    } else if (s.phase === 'countdown' && s.countdown > 0) {
       ctx.font = `800 ${Math.round(h * 0.26)}px system-ui`;
       ctx.fillStyle = 'rgba(255,255,255,0.95)';
       ctx.fillText(String(s.countdown), w / 2, h / 2);
@@ -860,41 +919,60 @@ export function createMedusaRenderer(
         h * 0.8,
       );
     } else if (s.phase === 'over') {
-      ctx.fillStyle = 'rgba(10,12,24,0.85)';
-      const pw = w * 0.46;
-      const ph = h * 0.56;
+      // Between-rounds leaderboard: series points, next round on a timer.
+      ctx.fillStyle = 'rgba(10,12,24,0.88)';
+      const pw = w * 0.5;
+      const ph = h * 0.72;
       ctx.beginPath();
       ctx.roundRect((w - pw) / 2, (h - ph) / 2, pw, ph, 22);
       ctx.fill();
       ctx.fillStyle = 'white';
-      ctx.font = `800 ${Math.round(h * 0.055)}px system-ui`;
-      ctx.fillText('MEDUSA', w / 2, h / 2 - ph * 0.4);
+      ctx.font = `800 ${Math.round(h * 0.05)}px system-ui`;
+      ctx.fillText(`🏆 ROUND ${s.round} — LEADERBOARD`, w / 2, h / 2 - ph * 0.42);
       const names = new Map<number, string>();
       if (room) for (const p of room.players) names.set(p.id, p.name);
       const medals = ['🥇', '🥈', '🥉'];
-      const top = s.finished.slice(0, 5);
-      if (top.length === 0) {
+      const finRank = new Map(s.finished.map((slot, i) => [slot, i]));
+      const rows = (s.scores ?? []).slice(0, 8);
+      if (rows.length === 0) {
         ctx.font = `700 ${Math.round(h * 0.04)}px system-ui`;
         ctx.fillText('Nobody made it… the garden grows. 🗿', w / 2, h / 2 - ph * 0.1);
       }
-      top.forEach((slot, i) => {
-        ctx.font = `700 ${Math.round(h * 0.042)}px system-ui`;
+      rows.forEach(([slot, pts], i) => {
+        const y = h / 2 - ph * 0.3 + i * h * 0.062;
+        const fr = finRank.get(slot);
+        const earned =
+          fr !== undefined ? Math.max(0, 10 - 2 * fr) : 0;
+        ctx.font = `700 ${Math.round(h * 0.038)}px system-ui`;
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'left';
         ctx.fillText(
           `${medals[i] ?? `${i + 1}.`} #${String(slot).padStart(2, '0')} ${names.get(slot) ?? ''}`,
-          w / 2,
-          h / 2 - ph * 0.22 + i * h * 0.07,
+          (w - pw) / 2 + pw * 0.08,
+          y,
+        );
+        ctx.textAlign = 'right';
+        ctx.fillStyle = earned > 0 ? '#ffd166' : '#b9c0e0';
+        ctx.fillText(
+          `${pts} pts${earned > 0 ? `  (+${earned})` : ''}`,
+          (w + pw) / 2 - pw * 0.08,
+          y,
         );
       });
+      ctx.textAlign = 'center';
       const stones2 = s.players.filter((p) => p[3] === ST_STONE).length;
       const fallen2 = s.players.filter((p) => p[3] === ST_FALLEN).length;
-      ctx.font = `700 ${Math.round(h * 0.032)}px system-ui`;
+      ctx.font = `700 ${Math.round(h * 0.03)}px system-ui`;
       ctx.fillStyle = '#b9c0e0';
       ctx.fillText(
         `${s.finished.length} escaped · ${stones2} statues` +
           (fallen2 > 0 ? ` · ${fallen2} fell` : ''),
         w / 2,
-        h / 2 + ph * 0.4,
+        h / 2 + ph * 0.34,
       );
+      ctx.font = `800 ${Math.round(h * 0.034)}px system-ui`;
+      ctx.fillStyle = 'white';
+      ctx.fillText(`Next round in ${Math.max(1, s.countdown)}…`, w / 2, h / 2 + ph * 0.42);
     }
   }
 
