@@ -130,10 +130,12 @@ export async function startGazeTracking(
     return { s: 2, c: Math.min(1, (CLOSE_AT - blink) / CLOSE_AT + 0.4) };
   };
 
+  let lastFrameAt = performance.now();
   const loop = () => {
     if (stopped) return;
     if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
       lastVideoTime = video.currentTime;
+      lastFrameAt = performance.now();
       try {
         const { s, c } = classify();
         if (s !== committed) {
@@ -156,6 +158,19 @@ export async function startGazeTracking(
       } catch {
         // a single bad frame is not worth crashing the loop over
       }
+    } else if (performance.now() - lastFrameAt > 1200) {
+      // The camera stalled — mobile browsers pause a <video> that leaves
+      // the DOM or when the tab backgrounds. NEVER keep reporting the last
+      // seen state as if it were live: commit UNKNOWN, and try to revive.
+      if (committed !== 3) {
+        committed = 3;
+        candidate = null;
+        agree = 0;
+        onState({ s: 3, c: 1 });
+      }
+      debug.face = 'STALLED — reviving';
+      if (video.paused) void video.play().catch(() => {});
+      lastFrameAt = performance.now() - 600; // retry revival ~every 0.6s
     }
     setTimeout(loop, 66); // ~15fps is plenty for eyelids
   };

@@ -223,6 +223,23 @@ const sharedCam: {
 const camWatchers = new Set<() => void>();
 let trackerPromise: Promise<void> | null = null;
 
+// A permanent, invisible holder on <body> for the camera <video>: mobile
+// browsers PAUSE a video that leaves the DOM, so between screens (lobby →
+// round → leaderboard) the element must always live somewhere in the
+// document — a detached camera froze the preview black and pinned the last
+// eye state.
+let camShelterEl: HTMLElement | null = null;
+function camShelter(): HTMLElement {
+  if (!camShelterEl) {
+    camShelterEl = document.createElement('div');
+    camShelterEl.style.cssText =
+      'position:fixed;left:0;bottom:0;width:2px;height:2px;overflow:hidden;' +
+      'opacity:0.01;pointer-events:none;';
+    document.body.appendChild(camShelterEl);
+  }
+  return camShelterEl;
+}
+
 function ensureTracker(): Promise<void> {
   if (!trackerPromise) {
     sharedCam.status = 'starting';
@@ -244,6 +261,7 @@ function ensureTracker(): Promise<void> {
       sharedCam.tracker = result;
       sharedCam.status = 'on';
       result.video.className = 'eyecam-video';
+      camShelter().appendChild(result.video); // never detached from the DOM
       dbg['cam'] = 'running';
       for (const w of camWatchers) w();
     })();
@@ -268,12 +286,28 @@ function useEyeTracking(emitToServer: boolean) {
     };
   }, []);
 
-  // Adopt the shared <video> into whichever preview box is mounted now.
+  // Adopt the shared <video> into whichever preview box is mounted now —
+  // and hand it back to the shelter on unmount so it never sits detached
+  // (browsers pause detached camera videos). play() after every move: the
+  // move itself can pause it.
   useEffect(() => {
     const v = sharedCam.tracker?.video;
     const box = previewRef.current;
-    if (v && box && v.parentElement !== box) box.appendChild(v);
+    if (v && box && v.parentElement !== box) {
+      box.appendChild(v);
+      void v.play().catch(() => {});
+    }
   });
+  useEffect(
+    () => () => {
+      const v = sharedCam.tracker?.video;
+      if (v && v.parentElement !== camShelter()) {
+        camShelter().appendChild(v);
+        void v.play().catch(() => {});
+      }
+    },
+    [],
+  );
 
   // Heartbeat so the server can tell fresh reports from a dead camera —
   // and the moment to mirror the tracker's live internals into the 🐞 panel.

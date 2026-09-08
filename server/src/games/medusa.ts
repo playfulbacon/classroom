@@ -104,6 +104,7 @@ interface BotBrain {
   // v2 gaze simulation:
   discipline: number; // 0..1 — low = lapses eyes-open during red; <0.1 = no camera
   lapseUntil: number; // t until which this bot is staring at the big screen
+  timid: boolean; // eye mode: freezes whenever her gaze is up (many kids do)
 }
 
 export class Medusa implements GameModule {
@@ -542,11 +543,14 @@ export class Medusa implements GameModule {
     let brain = this.brains.get(slot);
     if (!brain) {
       brain = {
-        reaction: 0.15 + Math.random() * 0.35,
+        reaction: 0.25 + Math.random() * 0.5,
         risk: Math.random(),
-        eagerness: 0.55 + Math.random() * 0.45,
+        // Kids on phones are not metronomes: bots amble rather than sprint,
+        // so humans can actually place.
+        eagerness: 0.3 + Math.random() * 0.35,
         discipline: Math.random(),
         lapseUntil: 0,
+        timid: Math.random() < 0.4,
       };
       this.brains.set(slot, brain);
     }
@@ -569,10 +573,12 @@ export class Medusa implements GameModule {
         const s = this.t < brain.lapseUntil ? GZ_OPEN : GZ_CLOSED;
         msgs.push({ t: 'gaze', s: s as 1 | 2 | 3, c: 0.9 });
       }
-      // Bots running blind lose the line like humans do: hesitant cadence
-      // and the occasional drift off the memorized route (a drift into a
-      // pit just bounces — it costs time, which is the point).
-      const blind = this.gaze === 'red' && this.t >= brain.lapseUntil;
+      // While her gaze is up, bots are properly handicapped: the timid
+      // 40% freeze outright until green (eyes shut, waiting it out), and
+      // the rest crawl blind — hesitant cadence, frequent drift off the
+      // memorized route. Nobody plays red like it's green.
+      if (brain.timid && this.gaze !== 'green') return msgs.length > 0 ? msgs : null;
+      const blind = this.gaze !== 'green' && this.t >= brain.lapseUntil;
       const hop = this.botHop(runner, brain, blind);
       if (hop) msgs.push(hop);
       return msgs.length > 0 ? msgs : null;
@@ -599,8 +605,8 @@ export class Medusa implements GameModule {
     if (runner.ride !== null) {
       return this.passable(runner.col + 1, runner.lane) ? { t: 'hop', d: 'f' } : null;
     }
-    if (Math.random() > brain.eagerness * (blind ? 0.3 : 1)) return null;
-    if (blind && Math.random() < 0.35) {
+    if (Math.random() > brain.eagerness * (blind ? 0.12 : 1)) return null;
+    if (blind && Math.random() < 0.45) {
       const dirs = ['f', 'f', 'l', 'r'] as const;
       const d = dirs[Math.floor(Math.random() * dirs.length)];
       const tc = runner.col + (d === 'f' ? 1 : 0);
