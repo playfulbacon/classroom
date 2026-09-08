@@ -216,10 +216,12 @@ const localGaze = { s: 3 as 1 | 2 | 3, at: 0 };
 // ever sent (when a component with emitToServer is mounted).
 const sharedCam: {
   status: GazeCamStatus;
+  stage: 'idle' | 'camera' | 'model'; // sub-state of 'starting' for UI copy
   failDetail: string;
   tracker: GazeTracker | null;
+  video: HTMLVideoElement | null; // live as soon as the camera is granted
   last: GazeState | null;
-} = { status: 'starting', failDetail: '', tracker: null, last: null };
+} = { status: 'starting', stage: 'idle', failDetail: '', tracker: null, video: null, last: null };
 const camWatchers = new Set<() => void>();
 let trackerPromise: Promise<void> | null = null;
 
@@ -245,23 +247,39 @@ function ensureTracker(): Promise<void> {
     sharedCam.status = 'starting';
     trackerPromise = (async () => {
       const mod = await import('../gaze');
-      const result = await mod.startGazeTracking((g) => {
-        sharedCam.last = g;
-        localGaze.s = g.s;
-        localGaze.at = performance.now();
-      });
+      const result = await mod.startGazeTracking(
+        (g) => {
+          sharedCam.last = g;
+          localGaze.s = g.s;
+          localGaze.at = performance.now();
+        },
+        (stage, video) => {
+          // Permission and model load are different waits — tell the UI
+          // which one it's in, and show the feed the moment it exists.
+          sharedCam.stage = stage;
+          if (video) {
+            video.className = 'eyecam-video';
+            camShelter().appendChild(video);
+            sharedCam.video = video;
+          }
+          for (const w of camWatchers) w();
+        },
+      );
       if ('error' in result) {
         sharedCam.status = 'failed';
         sharedCam.failDetail = result.detail;
+        sharedCam.video?.remove();
+        sharedCam.video = null;
         dbg['cam'] = `FAILED — ${result.detail}`;
         trackerPromise = null; // a retry may succeed (e.g. permission granted)
         for (const w of camWatchers) w();
         throw new Error(result.detail);
       }
       sharedCam.tracker = result;
+      sharedCam.video = result.video;
       sharedCam.status = 'on';
       result.video.className = 'eyecam-video';
-      camShelter().appendChild(result.video); // never detached from the DOM
+      if (!result.video.parentElement) camShelter().appendChild(result.video);
       dbg['cam'] = 'running';
       for (const w of camWatchers) w();
     })();
@@ -291,7 +309,7 @@ function useEyeTracking(emitToServer: boolean) {
   // (browsers pause detached camera videos). play() after every move: the
   // move itself can pause it.
   useEffect(() => {
-    const v = sharedCam.tracker?.video;
+    const v = sharedCam.video;
     const box = previewRef.current;
     if (v && box && v.parentElement !== box) {
       box.appendChild(v);
@@ -300,7 +318,7 @@ function useEyeTracking(emitToServer: boolean) {
   });
   useEffect(
     () => () => {
-      const v = sharedCam.tracker?.video;
+      const v = sharedCam.video;
       if (v && v.parentElement !== camShelter()) {
         camShelter().appendChild(v);
         void v.play().catch(() => {});
@@ -337,7 +355,38 @@ function useEyeTracking(emitToServer: boolean) {
 function CameraGate({ onReady }: { onReady: () => void }) {
   const [state, setState] = useState<'idle' | 'asking' | 'failed'>('idle');
   const [detail, setDetail] = useState('');
+  const [, force] = useState(0);
   const attempted = useRef(false);
+  const previewRef = useRef<HTMLDivElement>(null);
+
+  // Re-render on camera progress (permission granted → model loading), and
+  // show the live feed the moment it exists — the wait is no longer a
+  // single opaque "Asking…".
+  useEffect(() => {
+    const w = () => force((t) => t + 1);
+    camWatchers.add(w);
+    return () => {
+      camWatchers.delete(w);
+    };
+  }, []);
+  useEffect(() => {
+    const v = sharedCam.video;
+    const box = previewRef.current;
+    if (v && box && v.parentElement !== box) {
+      box.appendChild(v);
+      void v.play().catch(() => {});
+    }
+  });
+  useEffect(
+    () => () => {
+      const v = sharedCam.video;
+      if (v && v.parentElement !== camShelter()) {
+        camShelter().appendChild(v);
+        void v.play().catch(() => {});
+      }
+    },
+    [],
+  );
 
   const request = async () => {
     setState('asking');
@@ -375,6 +424,24 @@ function CameraGate({ onReady }: { onReady: () => void }) {
     void request();
   };
 
+  // Camera granted, sensor model still warming up: show the live feed and
+  // say exactly what's happening instead of a greyed-out "Asking…".
+  if (state === 'asking' && sharedCam.stage === 'model') {
+    return (
+      <div className="cam-gate">
+        <h2>✅ Camera on!</h2>
+        <div className="cam-gate-preview" ref={previewRef} />
+        <p>
+          <span className="cam-gate-spinner" /> Waking the eye sensor — a few
+          seconds…
+        </p>
+        <p style={{ opacity: 0.75 }}>
+          You&apos;ll join the room as soon as it can read your blinks.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="cam-gate">
       <h2>👁 Medusa needs to see your eyes</h2>
@@ -393,7 +460,11 @@ function CameraGate({ onReady }: { onReady: () => void }) {
         </div>
       )}
       <button className="cam-gate-btn" onClick={tap} disabled={state === 'asking'}>
-        {state === 'asking' ? 'Asking…' : state === 'failed' ? 'Try again' : 'Enable camera to join'}
+        {state === 'asking'
+          ? 'Waiting for camera permission…'
+          : state === 'failed'
+            ? 'Try again'
+            : 'Enable camera to join'}
       </button>
     </div>
   );
