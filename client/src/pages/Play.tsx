@@ -6,6 +6,7 @@ import type {
   MedusaPulseMsg,
   MeState,
   RoomState,
+  TetrisPulseMsg,
 } from '../../../shared/protocol';
 import { drawFragment, getRoomImage, groupArtCanvas } from '../art';
 import { dbg } from '../debug';
@@ -595,6 +596,42 @@ function FeedbackOverlay({
   );
 }
 
+// Human Tetris full-screen feedback: the phone floods green when you're
+// inside the shape and red when you're not, with the countdown huge in the
+// middle — nobody should have to squint at the projector to know if they're
+// safe. Pointer events pass through to the joystick underneath.
+function TetrisOverlay({
+  pulseRef,
+}: {
+  pulseRef: React.MutableRefObject<{ msg: TetrisPulseMsg; at: number } | null>;
+}) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const iv = setInterval(() => setTick((t) => t + 1), 100);
+    return () => clearInterval(iv);
+  }, []);
+  const pulse = pulseRef.current;
+  const fresh = pulse && performance.now() - pulse.at < 900 ? pulse.msg : null;
+  if (!fresh) return <div className="tz-overlay tz-wait" />;
+  const [inside, tLeft, phase, carrying] = fresh;
+  const forming = phase === 0;
+  const hurry = forming && !inside && tLeft <= 3;
+  const cls = !forming ? 'tz-wait' : inside ? 'tz-safe' : `tz-out${hurry ? ' tz-hurry' : ''}`;
+  return (
+    <div className={`tz-overlay ${cls}`}>
+      {forming ? (
+        <>
+          <div className={`tz-timer${tLeft <= 3 ? ' urgent' : ''}`}>{tLeft.toFixed(tLeft < 10 ? 1 : 0)}</div>
+          <div className="tz-word">{inside ? '✓ SAFE — stay inside' : '✗ OUTSIDE — get in!'}</div>
+        </>
+      ) : (
+        <div className="tz-word">{phase === 3 ? 'next shape coming…' : '⬇ THE WALL'}</div>
+      )}
+      {carrying === 1 && <div className="tz-carry">🙋 carrying someone — get them inside!</div>}
+    </div>
+  );
+}
+
 const BUZZ_PATTERNS: Record<BuzzType, number[]> = {
   go: [60],
   bumped: [35],
@@ -605,6 +642,9 @@ const BUZZ_PATTERNS: Record<BuzzType, number[]> = {
   // She's turning back — OPEN YOUR EYES. Felt through closed eyes, so it's
   // a firm double-tap, clearly different from the warn triple.
   clear: [80, 60, 80],
+  pickup: [30, 30, 30], // Human Tetris: NPC on your shoulders
+  rescued: [60, 40, 60, 40, 160], // Human Tetris: they made it
+  hurry: [90, 50, 90, 50, 90], // Human Tetris: seconds left and you're OUTSIDE
 };
 
 export function Play() {
@@ -613,6 +653,7 @@ export function Play() {
   const [room, setRoom] = useState<RoomState | null>(null);
   // Medusa personal-pulse plumbing (the feedback overlay reads the ref).
   const pulseRef = useRef<{ msg: MedusaPulseMsg; at: number } | null>(null);
+  const tzPulseRef = useRef<{ msg: TetrisPulseMsg; at: number } | null>(null);
   const lastMeterRef = useRef(0);
   const [connected, setConnected] = useState(socket.connected);
   const [joinError, setJoinError] = useState('');
@@ -653,7 +694,13 @@ export function Play() {
         // vibration is a nice-to-have
       }
     };
-    const onPulse = (msg: MedusaPulseMsg) => {
+    const onPulse = (msg: MedusaPulseMsg | TetrisPulseMsg) => {
+      if (Array.isArray(msg)) {
+        // Human Tetris: [inside, tLeft, phase, carrying]
+        tzPulseRef.current = { msg, at: performance.now() };
+        dbg['server'] = `${msg[0] ? 'INSIDE' : 'outside'} t=${msg[1]} ph=${msg[2]} carry=${msg[3]}`;
+        return;
+      }
       pulseRef.current = { msg, at: performance.now() };
       dbg['server'] =
         `gaze=${['green', 'turning', 'RED', 'returning'][msg.g[0]]} ` +
@@ -976,6 +1023,59 @@ export function Play() {
         </div>
         <div className="progress-track">
           <div className="progress-fill" style={{ width: `${progress * 100}%`, background: tint }} />
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------- Human Tetris
+  if (me.game === 'tetris') {
+    const cleared = me.cleared ?? 0;
+    if (me.tetrisState === 'out') {
+      return (
+        <div className="status-screen" style={{ background: '#3d1a22' }}>
+          {reconnectBanner}
+          <div className="big-num">{num}</div>
+          <h2>🧱 Flattened!</h2>
+          <div className="sub">
+            The wall got you in round {me.round ?? '?'}. Cheer the others on — they’re
+            playing for everyone.
+          </div>
+          {me.gameOver && <div className="sub">The crowd cleared {cleared} round{cleared === 1 ? '' : 's'}.</div>}
+        </div>
+      );
+    }
+    if (me.gameOver) {
+      return (
+        <div className="status-screen" style={{ background: '#245c36' }}>
+          {reconnectBanner}
+          <div className="big-num">{num}</div>
+          <h2>🧱 Still standing!</h2>
+          <div className="sub">
+            The crowd cleared {cleared} round{cleared === 1 ? '' : 's'} before the wall won.
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="controller" style={{ background: `color-mix(in srgb, ${tint} 30%, #0f1220)` }}>
+        {reconnectBanner}
+        <TouchSurface
+          onVector={(x, y) => sendInput({ t: 'joy', x, y })}
+          onRelease={() => sendInput({ t: 'joy', x: 0, y: 0 })}
+          onTap={() => sendInput({ t: 'ping' })}
+        />
+        <TetrisOverlay pulseRef={tzPulseRef} />
+        <div className="tz-round">
+          #{num} {me.name} · round {me.round ?? 0} · {cleared} cleared
+        </div>
+        <div className="controller-hud" style={{ justifyContent: 'flex-end', paddingBottom: 40 }}>
+          <div className="hint">
+            Swipe anywhere to move · TAP to make your character jump 👋
+          </div>
+          <div className="hint" style={{ opacity: 0.7 }}>
+            Touch a lost 🙋 to carry them — bring them inside the shape too
+          </div>
         </div>
       </div>
     );

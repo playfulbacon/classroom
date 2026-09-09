@@ -17,6 +17,7 @@ import {
   type StageSnapshot,
 } from '../../shared/protocol';
 import type { GameCtx, GameModule } from './games/types';
+import { HumanTetris } from './games/humanTetris';
 import { LastOneStanding } from './games/lastOneStanding';
 import { Medusa } from './games/medusa';
 import { TeamPuzzles } from './games/teamPuzzles';
@@ -285,7 +286,9 @@ export class Room {
 
   startGame(socket: Socket, gameId: unknown, options: unknown) {
     if (!socket.data.stage) return;
-    if (gameId !== 'los' && gameId !== 'puzzle' && gameId !== 'medusa') return;
+    if (gameId !== 'los' && gameId !== 'puzzle' && gameId !== 'medusa' && gameId !== 'tetris') {
+      return;
+    }
     if (this.bySlot.size === 0) return;
     this.touch();
     this.stopGame();
@@ -298,7 +301,9 @@ export class Room {
         ? new LastOneStanding(ctx)
         : gameId === 'puzzle'
           ? new TeamPuzzles(ctx)
-          : new Medusa(ctx);
+          : gameId === 'medusa'
+            ? new Medusa(ctx)
+            : new HumanTetris(ctx);
     this.broadcastRoom();
     this.game.start();
     this.startBotTicker();

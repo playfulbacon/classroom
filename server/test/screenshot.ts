@@ -14,7 +14,13 @@ import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { chromium, type Browser } from 'playwright-core';
 import { io, type Socket } from 'socket.io-client';
-import type { MedusaSnapshot, PuzzleSnapshot, StageSnapshot } from '../../shared/protocol';
+import type {
+  MedusaSnapshot,
+  PuzzleSnapshot,
+  StageSnapshot,
+  TetrisSnapshot,
+} from '../../shared/protocol';
+import { TETRIS_ISO_DIR, groundToScreenDir } from '../../shared/iso';
 
 const PORT = 4200;
 const BASE = `http://localhost:${PORT}`;
@@ -347,6 +353,60 @@ async function main() {
   await page.screenshot({ path: path.join(OUT_DIR, '8-medusa-tiers.png') });
   clearInterval(v2driver);
   console.log('medusa v2 captured');
+
+  // --- Human Tetris: the outline with the crowd flowing in, then the wall
+  // down on whoever stayed outside, plus the phone's SAFE/OUTSIDE wash.
+  await page.click('.host-corner button:has-text("Lobby")');
+  await sleep(400);
+  await page.click('button.start-tetris');
+  const tetrisDriver = setInterval(() => {
+    const s = latest as TetrisSnapshot | null;
+    if (!s || s.kind !== 'tetris' || s.phase !== 'play' || !s.shape) return;
+    const cells: [number, number][] = [];
+    for (let r = 0; r < s.shape.h; r++) {
+      for (let c = 0; c < s.shape.w; c++) {
+        if (s.shape.rows[r][c] === '1') cells.push([s.shape.x0 + c + 0.5, s.shape.z0 + r + 0.5]);
+      }
+    }
+    const pos = new Map(s.players.map((p) => [p[0], p] as const));
+    bots.forEach((bot, i) => {
+      const p = pos.get(bot.slot);
+      if (!p || p[3] !== 0) return;
+      // A few dawdlers hang back so the wall has someone to flatten.
+      if (i % 5 === 0) {
+        bot.socket.emit('input', { t: 'joy', x: 0, y: 0 });
+        return;
+      }
+      const [tx, tz] = cells[i % cells.length];
+      const dx = tx - p[1];
+      const dz = tz - p[2];
+      if (Math.hypot(dx, dz) < 0.1) {
+        bot.socket.emit('input', { t: 'joy', x: 0, y: 0 });
+        return;
+      }
+      const sd = groundToScreenDir(TETRIS_ISO_DIR, dx, dz);
+      bot.socket.emit('input', { t: 'joy', x: sd.x, y: sd.y });
+    });
+  }, 150);
+  // Last seconds of round 1: the outside reddens, the big digits count.
+  const tzAt = Date.now();
+  while (Date.now() - tzAt < 30000) {
+    const s = latest as TetrisSnapshot | null;
+    if (s?.kind === 'tetris' && s.phase === 'play' && s.roundPhase === 'form' && s.tLeft <= 2.2) break;
+    await sleep(100);
+  }
+  await page.screenshot({ path: path.join(OUT_DIR, '9-tetris-form.png') });
+  await phone.screenshot({ path: path.join(OUT_DIR, '10-tetris-phone.png') });
+  // The wall on the ground.
+  const tzRest = Date.now();
+  while (Date.now() - tzRest < 8000) {
+    const s = latest as TetrisSnapshot | null;
+    if (s?.kind === 'tetris' && s.roundPhase === 'rest' && s.pt > 0.5) break;
+    await sleep(80);
+  }
+  await page.screenshot({ path: path.join(OUT_DIR, '11-tetris-wall.png') });
+  clearInterval(tetrisDriver);
+  console.log('tetris captured');
   await phone.close();
 
   await browser.close();

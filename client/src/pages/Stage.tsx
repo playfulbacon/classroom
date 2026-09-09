@@ -9,23 +9,53 @@ import {
   type StageSnapshot,
 } from '../../../shared/protocol';
 import { LosRenderer } from '../render/los';
-import type { MedusaRenderer3D } from '../render/medusa3d';
 import { PuzzleRenderer } from '../render/puzzle';
 import * as sfx from '../sfx';
 import { socket } from '../socket';
+
+// The 3D games (Medusa, Human Tetris) share one three.js mount and one
+// lazy-loading path; each renderer is a separate code-split chunk.
+type SceneKind = 'medusa' | 'tetris';
+
+interface SceneRenderer {
+  mount(container: HTMLElement): void;
+  push(snap: StageSnapshot): void;
+  frame(): void;
+  dispose(): void;
+}
+
+const SCENE_LOADING: Record<SceneKind, string> = {
+  medusa: '🐍 Summoning Medusa…',
+  tetris: '🧱 Raising the wall…',
+};
+
+async function loadScene(kind: SceneKind, getRoom: () => RoomState | null): Promise<SceneRenderer> {
+  if (kind === 'medusa') {
+    const mod = await import('../render/medusa3d');
+    const r = mod.createMedusaRenderer(getRoom, {
+      // The stage owns the speakers: when the narrated intro (plus its
+      // beat of silence) finishes, tell the server to start the countdown.
+      onIntroDone: () => socket.emit('host:intro-done'),
+    });
+    return { ...r, push: (s) => s.kind === 'medusa' && r.push(s) };
+  }
+  const mod = await import('../render/tetris3d');
+  const r = mod.createTetrisRenderer(getRoom);
+  return { ...r, push: (s) => s.kind === 'tetris' && r.push(s) };
+}
 
 export function Stage() {
   const [room, setRoom] = useState<RoomState | null>(null);
   const [qr, setQr] = useState('');
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const medusaBoxRef = useRef<HTMLDivElement>(null);
+  const sceneBoxRef = useRef<HTMLDivElement>(null);
   const roomRef = useRef<RoomState | null>(null);
   const snapRef = useRef<StageSnapshot | null>(null);
   const losRef = useRef(new LosRenderer());
   const puzzleRef = useRef(new PuzzleRenderer());
-  const medusaRef = useRef<MedusaRenderer3D | null>(null);
-  const medusaLoadingRef = useRef(false);
-  const [medusaReady, setMedusaReady] = useState(false);
+  const sceneRef = useRef<{ kind: SceneKind; renderer: SceneRenderer } | null>(null);
+  const sceneLoadingRef = useRef(false);
+  const [sceneReady, setSceneReady] = useState(false);
 
   useEffect(() => {
     const create = () => {
@@ -52,23 +82,24 @@ export function Stage() {
         create();
       }
     };
-    const ensureMedusa = async () => {
-      if (medusaRef.current || medusaLoadingRef.current) return;
-      medusaLoadingRef.current = true;
+    const dropScene = () => {
+      sceneRef.current?.renderer.dispose();
+      sceneRef.current = null;
+      setSceneReady(false);
+    };
+    const ensureScene = async (kind: SceneKind) => {
+      if (sceneRef.current?.kind === kind || sceneLoadingRef.current) return;
+      if (sceneRef.current) dropScene();
+      sceneLoadingRef.current = true;
       try {
-        const mod = await import('../render/medusa3d');
-        const renderer = mod.createMedusaRenderer(() => roomRef.current, {
-          // The stage owns the speakers: when the narrated intro (plus its
-          // beat of silence) finishes, tell the server to start the countdown.
-          onIntroDone: () => socket.emit('host:intro-done'),
-        });
-        if (medusaBoxRef.current) renderer.mount(medusaBoxRef.current);
-        medusaRef.current = renderer;
+        const renderer = await loadScene(kind, () => roomRef.current);
+        if (sceneBoxRef.current) renderer.mount(sceneBoxRef.current);
+        sceneRef.current = { kind, renderer };
         const pending = snapRef.current;
-        if (pending?.kind === 'medusa') renderer.push(pending);
-        setMedusaReady(true);
+        if (pending?.kind === kind) renderer.push(pending);
+        setSceneReady(true);
       } finally {
-        medusaLoadingRef.current = false;
+        sceneLoadingRef.current = false;
       }
     };
     const onRoom = (r: RoomState) => {
@@ -78,18 +109,17 @@ export function Stage() {
         snapRef.current = null;
         losRef.current = new LosRenderer();
         puzzleRef.current = new PuzzleRenderer();
-        medusaRef.current?.dispose();
-        medusaRef.current = null;
-        setMedusaReady(false);
+        dropScene();
       }
     };
     const onSnapshot = (s: StageSnapshot) => {
       snapRef.current = s;
       if (s.kind === 'los') losRef.current.push(s);
       else if (s.kind === 'puzzle') puzzleRef.current.push(s);
-      else if (s.kind === 'medusa') {
-        if (medusaRef.current) medusaRef.current.push(s);
-        else void ensureMedusa();
+      else {
+        const scene = sceneRef.current;
+        if (scene?.kind === s.kind) scene.renderer.push(s);
+        else void ensureScene(s.kind);
       }
     };
     socket.on('connect', attach);
@@ -134,7 +164,7 @@ export function Stage() {
       if (r?.phase === 'playing' && snap) {
         if (snap.kind === 'los') losRef.current.draw(ctx, cssW, cssH, r);
         else if (snap.kind === 'puzzle') puzzleRef.current.draw(ctx, cssW, cssH, r);
-        else if (snap.kind === 'medusa') medusaRef.current?.frame();
+        else if (sceneRef.current?.kind === snap.kind) sceneRef.current.renderer.frame();
       }
     };
     raf = requestAnimationFrame(loop);
@@ -221,19 +251,22 @@ export function Stage() {
   const teamCount = room.players.length > 0 ? Math.ceil(room.players.length / teamK) : 0;
   const canShrink = (w: number, h: number) => w >= MIN_PUZZLE_DIM && w * h >= 2;
 
-  const inMedusa = room.phase === 'playing' && room.game === 'medusa';
+  const sceneKind: SceneKind | null =
+    room.phase === 'playing' && (room.game === 'medusa' || room.game === 'tetris')
+      ? room.game
+      : null;
 
   return (
     <div className="stage">
-      <canvas ref={canvasRef} style={inMedusa ? { display: 'none' } : undefined} />
+      <canvas ref={canvasRef} style={sceneKind ? { display: 'none' } : undefined} />
       <div
-        ref={medusaBoxRef}
-        className="medusa-box"
-        style={inMedusa ? undefined : { display: 'none' }}
+        ref={sceneBoxRef}
+        className="scene-box"
+        style={sceneKind ? undefined : { display: 'none' }}
       />
-      {inMedusa && !medusaReady && (
+      {sceneKind && !sceneReady && (
         <div className="status-screen" style={{ background: 'transparent' }}>
-          <h2>🐍 Summoning Medusa…</h2>
+          <h2>{SCENE_LOADING[sceneKind]}</h2>
         </div>
       )}
       {room.phase === 'lobby' && (
@@ -264,6 +297,7 @@ export function Stage() {
               </div>
             ))}
           </div>
+          <div className="host-dock">
           <div className="art-bar">
             <button className="add-art" onClick={() => fileInput.current?.click()}>
               📷 Add pictures
@@ -320,6 +354,14 @@ export function Stage() {
               onClick={() => start('medusa')}
             >
               🐍 Medusa
+            </button>
+            <button
+              className="start-tetris"
+              disabled={room.players.length === 0}
+              onClick={() => start('tetris')}
+              title="Co-op: everyone inside the shape before the wall drops. Carry the lost NPCs in with you."
+            >
+              🧱 Human Tetris
             </button>
             <div className="bot-controls">
               <span title="Puzzle size in cells — team size is width × height">🧩</span>
@@ -396,6 +438,7 @@ export function Stage() {
                 clear
               </button>
             </div>
+          </div>
           </div>
         </div>
       )}

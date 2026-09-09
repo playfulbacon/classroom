@@ -107,6 +107,29 @@ export function gong() {
   tone({ freq: 392, dur: 0.8, type: 'sine', gain: 0.07, at: 0.05 });
 }
 
+// Human Tetris: last-seconds timer tick.
+export function tick(urgent = false) {
+  tone({ freq: urgent ? 1180 : 880, dur: 0.05, type: 'square', gain: 0.06 });
+}
+
+// The wall lets go — a falling whoosh.
+export function whoosh(dur = 0.8) {
+  tone({ freq: 1400, end: 120, dur, type: 'sawtooth', gain: 0.05 });
+  noise(dur, 0.06, 0, 1800);
+}
+
+// The wall lands: a heavy thud (plus a crunch when it lands on someone).
+export function thud(crunch = false) {
+  tone({ freq: 70, end: 30, dur: 0.45, type: 'sine', gain: 0.22 });
+  noise(0.22, 0.2, 0, 400);
+  if (crunch) noise(0.14, 0.18, 0.04, 2600);
+}
+
+// An NPC scooped up — a bright little blip.
+export function blip() {
+  tone({ freq: 740, end: 1100, dur: 0.09, type: 'triangle', gain: 0.08 });
+}
+
 // Continuous snake hiss whose loudness follows danger (v2 red light).
 // Call every frame with level 0..1; 0 fades it to silence. One shared
 // looping noise source, lazily created.
