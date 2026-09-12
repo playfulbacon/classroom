@@ -230,7 +230,9 @@ export const NPC_CRUSHED = 3;
 
 // [slot, x, z, state, carrying] — continuous field coordinates (one cell =
 // one unit, cell (cx, cz) spans [cx, cx+1) × [cz, cz+1)); carrying = id of
-// the NPC on this player's shoulders, 0 when none.
+// the NPC on this player's shoulders, 0 when none. A cell holds ONE
+// occupant — a player (with or without a rider) or a waiting NPC; walking
+// into an occupied cell barges the occupant into a neighbouring cell.
 export type TetrisPlayerTuple = [number, number, number, number, number];
 
 // [id, x, z, state, carrier] — carrier = slot carrying it (0 when none).
@@ -359,6 +361,7 @@ export type InputPayload =
   | { t: 'touch'; down: boolean } // Puzzle: finger on/off (drives glow)
   | { t: 'hop'; d: 'f' | 'l' | 'r' | 'b' } // Medusa: hop forward/left/right/back
   | { t: 'ping' } // Medusa + Tetris: cosmetic "find me" beacon (always safe)
+  | { t: 'place' } // Tetris: set the carried NPC down in the cell ahead (else = ping)
   // Medusa eye mode: on-device eyes-open detection — a GZ_* state code plus
   // a 0..1 confidence. Sent on change plus a ~250ms heartbeat.
   | { t: 'gaze'; s: 1 | 2 | 3; c: number };

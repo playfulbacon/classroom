@@ -557,6 +557,14 @@ export function createTetrisRenderer(getRoom: () => RoomState | null): TetrisRen
         av.parts.group.position.set(x, 0, z);
         avatars.set(slot, av);
       }
+      // A whole-cell jump between snapshots is a barge: kick up some dust.
+      if (
+        s.phase === 'play' &&
+        av.state === TETRIS_ALIVE &&
+        Math.abs(x - av.tx) + Math.abs(z - av.tz) > 0.8
+      ) {
+        spawnDust(av.tx, av.tz, 3);
+      }
       av.tx = x;
       av.tz = z;
       if (carrying !== av.carrying) {
@@ -907,7 +915,11 @@ export function createTetrisRenderer(getRoom: () => RoomState | null): TetrisRen
     ctx.font = `700 ${Math.round(h * 0.03)}px system-ui`;
     ctx.fillStyle = 'rgba(255,255,255,0.8)';
     ctx.fillText(
-      `🧍 ${s.aliveCount}   🙋 ${s.rescued} rescued   🏆 ${s.cleared} cleared`,
+      `🧍 ${s.aliveCount}   🙋 ${s.rescued} rescued` +
+        (s.npcs.some((n) => n[3] === NPC_WAITING)
+          ? ` · ${s.npcs.filter((n) => n[3] === NPC_WAITING).length} waiting`
+          : '') +
+        `   🏆 ${s.cleared} cleared`,
       w - h * 0.03,
       h * 0.075,
     );

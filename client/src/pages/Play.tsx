@@ -1063,7 +1063,9 @@ export function Play() {
         <TouchSurface
           onVector={(x, y) => sendInput({ t: 'joy', x, y })}
           onRelease={() => sendInput({ t: 'joy', x: 0, y: 0 })}
-          onTap={() => sendInput({ t: 'ping' })}
+          // Hands full: a tap sets the NPC down in the cell ahead. Empty
+          // hands: a tap makes your character jump ("find me").
+          onTap={() => sendInput({ t: me.carrying ? 'place' : 'ping' })}
         />
         <TetrisOverlay pulseRef={tzPulseRef} />
         <div className="tz-round">
@@ -1071,10 +1073,13 @@ export function Play() {
         </div>
         <div className="controller-hud" style={{ justifyContent: 'flex-end', paddingBottom: 40 }}>
           <div className="hint">
-            Swipe anywhere to move · TAP to make your character jump 👋
+            {me.carrying
+              ? 'Swipe to move · TAP to set them down in the cell ahead of you'
+              : 'Swipe anywhere to move · TAP to make your character jump 👋'}
           </div>
           <div className="hint" style={{ opacity: 0.7 }}>
-            Touch a lost 🙋 to carry them — bring them inside the shape too
+            One per cell — walk into someone to barge them aside. Walk into a lost 🙋
+            to carry them; set them down INSIDE the shape and go back for more.
           </div>
         </div>
       </div>

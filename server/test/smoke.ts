@@ -748,6 +748,7 @@ async function main() {
   let tzPulses = 0;
   let tzInsideSeen = false;
   let tzCarrySeen = false;
+  let tzPlaced = 0;
   bots[2].socket.on('pulse', (m: TetrisPulseMsg) => {
     if (!Array.isArray(m)) return;
     tzPulses++;
@@ -795,11 +796,23 @@ async function main() {
         joyToward(b, x, z, 0.5, 0.5);
         return;
       }
-      if (b.slot === hero && !carrying) {
-        const npc = s.npcs.find((n) => n[3] === NPC_WAITING);
-        if (npc) {
-          joyToward(b, x, z, npc[1], npc[2]);
-          return;
+      const inShape = (px: number, pz: number) => {
+        const c = Math.floor(px) - s.shape!.x0;
+        const r = Math.floor(pz) - s.shape!.z0;
+        return c >= 0 && r >= 0 && c < s.shape!.w && r < s.shape!.h && s.shape!.rows[r][c] === '1';
+      };
+      if (b.slot === hero) {
+        // Fetch stranded NPCs (outside the shape); once inside with one on
+        // the shoulders, tap to set it down and go back for the next.
+        if (!carrying) {
+          const npc = s.npcs.find((n) => n[3] === NPC_WAITING && !inShape(n[1], n[2]));
+          if (npc) {
+            joyToward(b, x, z, npc[1], npc[2]);
+            return;
+          }
+        } else if (inShape(x, z)) {
+          tzPlaced++;
+          b.socket.emit('input', { t: 'place' });
         }
       }
       if (carrying) tzCarrySeen = true;
@@ -843,6 +856,7 @@ async function main() {
     return s.rescued >= 1 ? true : null;
   });
   if (!tzCarrySeen) fail('the hero never showed as carrying');
+  if (tzPlaced === 0) fail('the hero never set an NPC down');
   await waitFor("the hero's phone to know it carried", 3000, () =>
     bots[1].me?.game === 'tetris' ? true : null,
   );

@@ -116,15 +116,26 @@ and hold). A **shape's outline appears** on the ground and a timer runs; at
 zero the **wall — the whole field except the shape — drops out of the sky**
 and flattens anyone still outside. It rests while the crushed are counted,
 lifts back out of frame, and the next shape appears with a shorter timer.
-Shapes are random blobs that usually contain **sealed holes**, so every
-round the crowd has to flow around gaps and pack into corridors; they
-tighten round by round (from about one cell per head down to half a cell)
-so the whole class has to get organised.
+Shapes are random blobs that usually contain **sealed holes** — and often
+several, spread across a roomier "swiss" shape — so every round the crowd
+has to scatter around gaps and pack into corridors. The shape always has
+**at least one cell per person and per NPC**, plus breathing room that
+shrinks to a single spare cell by round nine.
 
+- **One per cell.** A cell holds exactly one occupant — a player (with or
+  without a rider) or a waiting NPC. Walk into an occupied cell and you
+  **barge** whoever is there aside: sideways if there's room, otherwise
+  the whole line ahead gets shunted forward (and if it runs into the field
+  edge, nobody moves). A freshly barged player can't barge back for a
+  beat, so the aggressor keeps the cell. Nobody's crowd can squeeze you
+  out; only a deliberate shove can.
 - **Lost NPCs** turn up outside the safe zone from round 2 (the little
-  ones with the pointed hats, waving "HELP!"). Walk into one to scoop it
-  onto your shoulders — **one per player** — and bring it inside before the
-  drop. A rescued NPC celebrates and vanishes; one left outside is crushed,
+  ones with the pointed hats, waving "HELP!") — **more every round**. Walk
+  into one to scoop it onto your shoulders — **one per player** — carry
+  it inside, and **tap to set it down** in the cell ahead of you (a cell
+  inside the shape wins over the facing direction). A placed NPC takes a
+  cell of its own, so the crowd has to plan around it; then go back for the
+  next. A rescued NPC celebrates and vanishes; one left outside is crushed,
   and a rider goes down with a flattened carrier.
 - **Lose condition**: flattened players and crushed NPCs both count toward
   a **loss budget** (about a third of the crowd, shown as hearts). Reach it
@@ -132,9 +143,10 @@ so the whole class has to get organised.
   for the rest of the game.
 - **Phones shout your state**: the whole screen floods green *SAFE* or red
   *OUTSIDE — get in!* with the countdown huge in the middle (a 5 Hz personal
-  pulse), buzzes when you're still outside with three seconds to go, and
-  shows when you're carrying someone. **Tap** to make your character jump
-  and its number flash on the big screen ("find me").
+  pulse), buzzes when you're still outside with three seconds to go (and
+  when someone barges you), and shows when you're carrying someone.
+  **Tap** with empty hands to make your character jump and its number
+  flash on the big screen ("find me").
 - Late joiners drop in inside the current shape, so a mid-round arrival is
   never an instant flattening.
 
@@ -158,9 +170,9 @@ ferries, freeze on red in classic mode, and in eye mode simulate gaze
 discipline — some close their eyes and run blind (and the gamblers among
 them occasionally drift off the route and fall into a pit), some get
 caught staring, a few "have no camera" and meet the slow death; in Human
-Tetris they head for uncrowded interior cells of the shape with human
-reaction lag, a streak of laziness, and a taste for fetching NPCs when
-there's time — a bots-only crowd typically lasts ten to twenty rounds. Add
+Tetris they head for free interior cells of the shape with human reaction
+lag, a streak of laziness, and a taste for fetching NPCs when there's time
+(setting them down inside and going back for more). Add
 and remove them from the lobby between rounds.
 
 For phones on the same network, use the LAN URL Vite prints (e.g.
@@ -270,11 +282,13 @@ server/              Node + Express + Socket.IO
                          stone tiers, per-phone pulse stream)
     medusaField.ts       field generation with explicit BFS solvability:
                          carved safe paths, chasm bands, ferries, crumble
-    humanTetris.ts       20 Hz free movement + soft crowd separation, the
-                         form/drop/rest/rise round machine, NPC carrying,
-                         loss budget, bots
+    humanTetris.ts       20 Hz free movement on an exclusive cell grid
+                         (barging, chains, stun), the form/drop/rest/rise
+                         round machine, NPC carrying + placing, loss
+                         budget, bots
     tetrisShapes.ts      random 4-connected shapes with sealed interior
-                         holes, sized for the crowd and kept off the edge
+                         holes (blob + multi-hole swiss families), sized
+                         for the crowd and kept off the edge
 client/              Vite + React
   src/pages/Stage.tsx    projector: lobby with QR + canvas game rendering
   src/pages/Play.tsx     phone: full-screen gesture surface (drag joystick,
