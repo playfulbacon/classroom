@@ -468,8 +468,19 @@ console.log('unit: medusa fields always solvable (chasms, ferries, crumble) OK')
   const r4 = internals.runners.get(4);
   assert.equal(r4.state, 1, 'timeout petrifies stragglers');
   assert.equal(internals.phase, 'over');
+
+  // The leaderboard waits for the teacher: no auto-advance, and only the
+  // stage's Next round starts round 2 (straight to the countdown).
+  for (let i = 0; i < 200; i++) internals.tick(0.05);
+  assert.equal(internals.phase, 'over', 'the leaderboard holds until told');
+  assert.equal(internals.round, 1);
+  game.nextRound();
+  assert.equal(internals.round, 2);
+  assert.equal(internals.phase, 'countdown');
+  game.nextRound();
+  assert.equal(internals.round, 2, 'Next round is ignored outside the leaderboard');
 }
-console.log('unit: medusa gaze/cooldown/pit-fall/timeout OK');
+console.log('unit: medusa gaze/cooldown/pit-fall/timeout/next-round OK');
 
 // Ferry platforms: board only when aligned, ride across, step off; a hop
 // into open water (ferry mid-gorge) is a drowning.

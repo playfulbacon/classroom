@@ -32,6 +32,9 @@ export interface GameModule {
   // Stage signal: the narrated intro finished — begin the countdown.
   // Only games with an 'intro' phase implement it.
   introDone?(): void;
+  // Stage signal: leave the between-rounds leaderboard for the next round.
+  // Only games with a round series implement it.
+  nextRound?(): void;
   dispose(): void;
   input(slot: number, payload: InputPayload): void;
   // called when a new player joins mid-round

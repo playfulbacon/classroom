@@ -338,6 +338,12 @@ export class Room {
     this.game?.introDone?.();
   }
 
+  nextRound(socket: Socket) {
+    if (!socket.data.stage) return;
+    this.touch();
+    this.game?.nextRound?.();
+  }
+
   toLobby(socket: Socket) {
     if (!socket.data.stage) return;
     this.touch();

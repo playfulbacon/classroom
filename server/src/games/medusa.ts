@@ -27,7 +27,6 @@ const COUNTDOWN = 3;
 // still gets a round. It must be comfortably longer than the slowest voice
 // reading the line — firing mid-speech would cut the narrator off.
 const INTRO_FALLBACK = 30;
-const OVER_BREAK = 3; // seconds of leaderboard between rounds of a series
 // Finish-line points per placement: 10, 8, 6, … (never below 0).
 const POINTS_FIRST = 10;
 const POINTS_STEP = 2;
@@ -123,11 +122,10 @@ export class Medusa implements GameModule {
   private countdown = COUNTDOWN;
   private introLeft = INTRO_FALLBACK;
   // Starting Medusa starts a SERIES: each round ends when everyone has
-  // finished or been eliminated, the leaderboard shows for a beat, then the
-  // next round starts automatically (no intro after the first).
+  // finished or been eliminated, then the leaderboard waits for the teacher
+  // to pick the next round (no intro after the first) or the lobby.
   private round = 1;
   private readonly points = new Map<number, number>(); // slot → series total
-  private overLeft = 0; // seconds of leaderboard before the next round
   private t = 0;
   private gaze: MedusaGazeState = 'green';
   private gazeUntil = 0; // t at which the current gaze state ends
@@ -217,11 +215,11 @@ export class Medusa implements GameModule {
   }
 
   // The round is decided (everyone finished or eliminated, or time ran
-  // out): award finish-line points and hold the leaderboard for a beat.
+  // out): award finish-line points and hold the leaderboard until the
+  // teacher picks what's next.
   private endRound() {
     if (this.phase === 'over') return;
     this.phase = 'over';
-    this.overLeft = OVER_BREAK;
     this.finished.forEach((slot, rank) => {
       const pts = Math.max(0, POINTS_FIRST - POINTS_STEP * rank);
       this.points.set(slot, (this.points.get(slot) ?? 0) + pts);
@@ -231,7 +229,9 @@ export class Medusa implements GameModule {
 
   // The next round of the series: fresh field, everyone back at the start,
   // straight to the countdown — the narrated intro plays only once.
-  private newRound() {
+  // Stage signal from the leaderboard's Next round button.
+  nextRound() {
+    if (this.phase !== 'over') return;
     this.round++;
     this.setupRound();
     this.phase = 'countdown';
@@ -729,9 +729,7 @@ export class Medusa implements GameModule {
       return;
     }
     if (this.phase === 'over') {
-      // Leaderboard beat, then the next round of the series starts itself.
-      this.overLeft -= dt;
-      if (this.overLeft <= 0) this.newRound();
+      // Leaderboard: waits for the teacher's Next round (or Lobby).
       this.emitSnapshot();
       return;
     }
@@ -866,8 +864,7 @@ export class Medusa implements GameModule {
     const snapshot: MedusaSnapshot = {
       kind: 'medusa',
       phase: this.phase,
-      // During the leaderboard beat this carries seconds until the next round.
-      countdown: Math.ceil(this.phase === 'over' ? this.overLeft : this.countdown),
+      countdown: Math.ceil(this.phase === 'over' ? 0 : this.countdown),
       round: this.round,
       scores,
       t: round1(this.t),

@@ -166,8 +166,8 @@ export type MedusaCrumbleTuple = [number, number, 0 | 1 | 2];
 export interface MedusaSnapshot {
   kind: 'medusa';
   phase: GamePhase;
-  // During 'countdown' the 3-2-1; during 'over' the seconds until the next
-  // round of the series starts itself.
+  // During 'countdown' the 3-2-1; 0 during 'over' (the leaderboard waits
+  // for the stage's 'host:next-round').
   countdown: number;
   round: number; // 1-based round number within the series
   // Series leaderboard, sorted by points desc: [slot, totalPoints]. Finish

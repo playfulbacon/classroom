@@ -56,6 +56,8 @@ export function Stage() {
   const sceneRef = useRef<{ kind: SceneKind; renderer: SceneRenderer } | null>(null);
   const sceneLoadingRef = useRef(false);
   const [sceneReady, setSceneReady] = useState(false);
+  // Medusa's between-rounds leaderboard waits on the teacher's choice.
+  const [medusaOver, setMedusaOver] = useState(false);
 
   useEffect(() => {
     const create = () => {
@@ -107,6 +109,7 @@ export function Stage() {
       setRoom(r);
       if (r.phase === 'lobby') {
         snapRef.current = null;
+        setMedusaOver(false);
         losRef.current = new LosRenderer();
         puzzleRef.current = new PuzzleRenderer();
         dropScene();
@@ -114,6 +117,7 @@ export function Stage() {
     };
     const onSnapshot = (s: StageSnapshot) => {
       snapRef.current = s;
+      setMedusaOver(s.kind === 'medusa' && s.phase === 'over');
       if (s.kind === 'los') losRef.current.push(s);
       else if (s.kind === 'puzzle') puzzleRef.current.push(s);
       else {
@@ -440,6 +444,14 @@ export function Stage() {
             </div>
           </div>
           </div>
+        </div>
+      )}
+      {room.phase === 'playing' && medusaOver && (
+        <div className="round-choice">
+          <button onClick={() => socket.emit('host:lobby')}>🏠 Exit to lobby</button>
+          <button className="primary" onClick={() => socket.emit('host:next-round')}>
+            ▶ Next round
+          </button>
         </div>
       )}
       {room.phase === 'playing' && (

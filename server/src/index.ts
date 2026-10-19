@@ -107,6 +107,10 @@ io.on('connection', (socket) => {
     roomOf(socket)?.introDone(socket);
   });
 
+  socket.on('host:next-round', () => {
+    roomOf(socket)?.nextRound(socket);
+  });
+
   socket.on('host:bots', (req: { delta?: number }) => {
     roomOf(socket)?.adjustBots(socket, req?.delta);
   });

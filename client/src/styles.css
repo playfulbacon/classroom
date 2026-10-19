@@ -906,6 +906,32 @@ input {
   transition: opacity 0.2s;
 }
 
+/* Medusa leaderboard footer: sits inside the panel's bottom strip. */
+.round-choice {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 72vh * 0.42);
+  transform: translate(-50%, -50%);
+  display: flex;
+  gap: 2vw;
+  z-index: 10;
+}
+
+.round-choice button {
+  padding: 1.4vh 2.4vw;
+  border-radius: 14px;
+  border: none;
+  background: rgba(42, 49, 85, 0.95);
+  color: white;
+  font-size: max(18px, 2.6vh);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.round-choice button.primary {
+  background: #2ec27e;
+}
+
 .host-corner:hover {
   opacity: 1;
 }

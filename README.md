@@ -105,9 +105,9 @@ race to the finish line… close your eyes or you'll turn to stone!"), a
 beat of silence, then the voice counts down "3, 2, 1, GO!". A round
 ends when every player has finished or been eliminated (or time runs
 out); finishers earn **10, 8, 6, … points** by placement, the stage
-shows the **series leaderboard**, and the next round starts itself 3
-seconds later — no intro, straight to the spoken countdown. The teacher
-ends the series from the Lobby button.
+shows the **series leaderboard** with two buttons: **▶ Next round**
+(no intro, straight to the spoken countdown) or **🏠 Exit to lobby** to
+end the series.
 
 ### 🧱 Human Tetris
 A co-op crowd game on the same 3D stage as Medusa, with the same avatars.

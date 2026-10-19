@@ -919,7 +919,8 @@ export function createMedusaRenderer(
         h * 0.8,
       );
     } else if (s.phase === 'over') {
-      // Between-rounds leaderboard: series points, next round on a timer.
+      // Between-rounds leaderboard: series points; the stage's Next round /
+      // Exit buttons sit over the footer.
       ctx.fillStyle = 'rgba(10,12,24,0.88)';
       const pw = w * 0.5;
       const ph = h * 0.72;
@@ -970,9 +971,6 @@ export function createMedusaRenderer(
         w / 2,
         h / 2 + ph * 0.34,
       );
-      ctx.font = `800 ${Math.round(h * 0.034)}px system-ui`;
-      ctx.fillStyle = 'white';
-      ctx.fillText(`Next round in ${Math.max(1, s.countdown)}…`, w / 2, h / 2 + ph * 0.42);
     }
   }
 
